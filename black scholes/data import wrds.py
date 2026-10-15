@@ -1,0 +1,61 @@
+import wrds
+import numpy as np
+import pandas as pd
+
+DATE = "2024-06-12"     # pick any trading day
+YEAR = DATE[:4]         # tables are split by year
+SECID = 108105          # SPX
+
+db = wrds.Connection(wrds_username="kairogers")
+
+# 0. Sanity check: confirm 108105 is the S&P 500 index
+print(db.raw_sql(f"SELECT * FROM optionm.securd WHERE secid = {SECID}"))
+
+# 1. SPX options on that day
+opts = db.raw_sql(f"""
+    SELECT date, exdate, cp_flag, strike_price, best_bid, best_offer,
+           volume, open_interest, impl_volatility, delta,
+           am_settlement, expiry_indicator, forward_price
+    FROM optionm.opprcd{YEAR}
+    WHERE secid = {SECID}
+      AND date = '{DATE}'
+""", date_cols=["date", "exdate"])
+
+# 2. Index level that day
+spot = db.raw_sql(f"""
+    SELECT date, close
+    FROM optionm.secprd{YEAR}
+    WHERE secid = {SECID}
+      AND date = '{DATE}'
+""", date_cols=["date"])
+
+# 3. Zero curve that day
+zc = db.raw_sql(f"""
+    SELECT days, rate
+    FROM optionm.zerocd
+    WHERE date = '{DATE}'
+    ORDER BY days
+""")
+
+db.close()
+
+# ---- Tidy up ----
+S = spot["close"].iloc[0]
+
+opts["strike"] = opts["strike_price"] / 1000                  # stored x1000
+opts["mid"] = (opts["best_bid"] + opts["best_offer"]) / 2
+opts["days"] = (opts["exdate"] - opts["date"]).dt.days
+opts["T"] = opts["days"] / 365
+opts["S"] = S
+
+# Interpolate risk-free rate to each expiry (zerocd rate is in %, continuously compounded)
+opts["r"] = np.interp(opts["days"], zc["days"], zc["rate"]) / 100
+
+# Basic cleaning: drop zero bids and missing IVs (-99.99 / NaN)
+opts = opts[(opts["best_bid"] > 0) & (opts["impl_volatility"].notna())]
+
+print(f"S&P 500 on {DATE}: {S:.2f}")
+print(f"{len(opts)} options, {opts['exdate'].nunique()} expiries")
+print(opts.head())
+
+opts.to_csv(f"spx_options_{DATE}.csv", index=False)
