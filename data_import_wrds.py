@@ -1,3 +1,4 @@
+#%%
 import wrds
 import numpy as np
 import pandas as pd
@@ -10,6 +11,10 @@ db = wrds.Connection(wrds_username="kairogers")
 
 # 0. Sanity check: confirm 108105 is the S&P 500 index
 print(db.raw_sql(f"SELECT * FROM optionm.securd WHERE secid = {SECID}"))
+
+print([t for t in db.list_tables(library="optionm") if "dvd" in t or "distr" in t])
+
+#%%
 
 # 1. SPX options on that day
 opts = db.raw_sql(f"""
@@ -59,3 +64,4 @@ print(f"{len(opts)} options, {opts['exdate'].nunique()} expiries")
 print(opts.head())
 
 opts.to_csv(f"spx_options_{DATE}.csv", index=False)
+# %%
