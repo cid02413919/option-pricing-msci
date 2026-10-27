@@ -14,3 +14,9 @@ A potential cause of the implied volatility not matching is due to not taking in
 The merton model decreased the MSE significantly, especially for longer expiry options, however a slight missmatch remains.
 ![MSE by expiry, log scale](figures/mse_by_expiry.png)
 
+## 27/10/26
+**Aims:**
+- To implement realised vol
+
+<img src="figures/real_vol_zeromean.png" width="600">
+The top one shows the zero-mean version of the realised volatility which is used more commonly. The bottom one shows the textbook definition of the realised volatility. The zero-mean is used in practice usually, we looked into the reason, its something to do with the P&L not being accurate when you use the textbook version, but we didnt really understand it. We will implement both to compare accuracy.

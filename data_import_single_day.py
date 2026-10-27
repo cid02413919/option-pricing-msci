@@ -3,7 +3,7 @@ import wrds
 import numpy as np
 import pandas as pd
 
-DATE = "2024-06-12"     # pick any trading day
+DATE = "2023-10-02"     # pick any trading day
 YEAR = DATE[:4]         # tables are split by year
 SECID = 108105          # SPX
 
@@ -34,7 +34,7 @@ opts = db.raw_sql(f"""
            am_settlement, expiry_indicator, forward_price
     FROM optionm.opprcd{YEAR}
     WHERE secid = {SECID}
-      AND date BETWEEN '{START}' AND '{END}'
+      AND date = '{DATE}'
 """, date_cols=["date", "exdate"])
 
 # 2. Index level that day
@@ -42,14 +42,14 @@ spot = db.raw_sql(f"""
     SELECT date, close
     FROM optionm.secprd{YEAR}
     WHERE secid = {SECID}
-      AND date BETWEEN '{START}' AND '{END}'
+      AND date = '{DATE}'
 """, date_cols=["date"])
 
 # 3. Zero curve that day (The risk free rate for different maturities)
 zc = db.raw_sql(f"""
     SELECT days, rate
     FROM optionm.zerocd
-    WHERE date BETWEEN '{START}' AND '{END}'
+    WHERE date = '{DATE}'
     ORDER BY days
 """)
 
@@ -58,7 +58,7 @@ div = db.raw_sql(f"""
     SELECT secid, date, rate
     FROM optionm.idxdvd
     WHERE secid = {SECID}
-      AND date BETWEEN '{START}' AND '{END}'
+      AND date = '{DATE}'
 """)
 
 db.close()
@@ -86,5 +86,5 @@ print(f"S&P 500 on {DATE}: {S:.2f}")
 print(f"{len(opts)} options, {opts['exdate'].nunique()} expiries")
 print(opts.head())
 
-opts.to_csv(f"spx_options_{DATE}.csv", index=False)
+opts.to_csv(f"source/data/spx_options_{DATE}.csv", index=False)
 # %%
