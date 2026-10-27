@@ -1,10 +1,11 @@
 #%%
 import pandas as pd
-from source.classical_models.black_scholes.pricing import black_scholes_call, black_scholes_merton_call
+from pricing import black_scholes_call, black_scholes_merton_call, realised_vol
 import numpy as np
 import matplotlib.pyplot as plt
 
-df = pd.read_csv("source/data/spx_options_2024-06-12.csv", usecols=["cp_flag", "strike_price", "impl_volatility", "mid", "T", "S", "r", "q", "days"])
+df = pd.read_csv("../../data/spx_options_2024-06-12.csv", usecols=["cp_flag", "strike_price", "impl_volatility", "mid", "T", "S", "r", "q", "days"])
+spot = pd.read_csv("../../data/spx_spot_2023-10-01_2024-12-31.csv", index_col="date", parse_dates=True)
 
 #%% Calculating overall MSE for black scholes including and not including dividend
 residuals = []
@@ -80,5 +81,22 @@ plt.tight_layout()
 plt.savefig("figures/mse_by_expiry_log.png", dpi=200)
 plt.show()
 
+#%% Realised vol vs ATM implied vol on the options date
+date = "2024-06-12"
+N = 60
+target_days = round(N * 365 / 252)          # ~87 calendar days, matching the RV window
 
+rv = realised_vol(date, spot["log_return"], N=N, annual=252)
+
+opts = df.dropna(subset=["impl_volatility"]).copy()
+opts["moneyness"] = (opts["strike_price"] / 1000) / opts["S"]
+
+# expiry closest to the target horizon, then strikes within 2% of spot (calls and puts)
+expiry = opts.loc[(opts["days"] - target_days).abs().idxmin(), "days"]
+atm = opts[(opts["days"] == expiry) & opts["moneyness"].between(0.98, 1.02)]
+iv_atm = atm["impl_volatility"].mean()
+
+print(f"Realised vol ({N}d before {date}): {rv:.2%}")
+print(f"ATM implied vol ({expiry}d expiry, {len(atm)} options): {iv_atm:.2%}")
+print(f"Plain mean of all IVs, for comparison: {opts['impl_volatility'].mean():.2%}")
 # %%
