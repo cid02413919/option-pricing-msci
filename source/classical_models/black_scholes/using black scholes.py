@@ -1,6 +1,6 @@
 #%%
 import pandas as pd
-from pricing import black_scholes_call, black_scholes_merton_call, realised_vol
+from pricing import black_scholes_call, realised_vol
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -43,7 +43,7 @@ for i in range(len(df)):
     q       = row["q"]
 
     if cp_flag == "C":
-        call_price_bs = black_scholes_merton_call(S, K, sigma, r, T, q)
+        call_price_bs = black_scholes_call(S, K, sigma, r, T, q)
         residuals.append(call_price_bs - mid)
 
 mse = sum(j**2 for j in residuals) / len(residuals)
@@ -58,7 +58,7 @@ calls = df[df["cp_flag"] == "C"].copy()
 K = calls["strike_price"] / 1000
 
 bs  = black_scholes_call(calls["S"], K, calls["impl_volatility"], calls["r"], calls["T"])
-bsm = black_scholes_merton_call(calls["S"], K, calls["impl_volatility"], calls["r"], calls["T"], calls["q"])
+bsm = black_scholes_call(calls["S"], K, calls["impl_volatility"], calls["r"], calls["T"], calls["q"])
 
 calls["sq_err_bs"]  = (bs  - calls["mid"]) ** 2
 calls["sq_err_bsm"] = (bsm - calls["mid"]) ** 2
@@ -78,7 +78,6 @@ ax.set_title("SPX calls, 2024-06-12: pricing error by expiry")
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
-plt.savefig("figures/mse_by_expiry_log.png", dpi=200)
 plt.show()
 
 #%% Realised vol vs ATM implied vol on the options date
