@@ -1,0 +1,32 @@
+#%%
+import wrds
+import numpy as np
+import pandas as pd
+
+START, END = "2023-05-01", "2023-12-15"
+YEAR = START[:4]        # tables are split by year (DOESNT WORK WHEN DATES SPAN OVER MULTIPLE YEARS)
+SECID = 108105          # SPX
+OPTIONID = 155036250.0    # ID of option you want
+
+#%%
+
+db = wrds.Connection(wrds_username="kairogers")
+
+opt = db.raw_sql(f"""
+    SELECT date, optionid, exdate, cp_flag, strike_price, best_bid, best_offer,
+           volume, open_interest, impl_volatility, delta,
+           am_settlement, expiry_indicator, forward_price
+    FROM optionm.opprcd{YEAR}
+    WHERE secid = {SECID}
+      AND optionid = {OPTIONID}
+      AND date BETWEEN '{START}' AND '{END}'
+    ORDER BY date
+""", date_cols=["date", "exdate"])
+
+db.close()
+
+#%%
+
+opt.to_csv(f"source/data/spx_option_{START}-{END}.csv", index=False)
+
+# %%

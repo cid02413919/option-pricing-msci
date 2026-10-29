@@ -3,7 +3,7 @@ import wrds
 import numpy as np
 import pandas as pd
 
-DATE = "2023-10-02"     # pick any trading day
+DATE = "2023-06-12"     # pick any trading day
 YEAR = DATE[:4]         # tables are split by year
 SECID = 108105          # SPX
 
@@ -29,7 +29,7 @@ print(cols_div[["name", "type"]].to_string())
 
 # 1. SPX options on that day
 opts = db.raw_sql(f"""
-    SELECT date, exdate, cp_flag, strike_price, best_bid, best_offer,
+    SELECT date, optionid, exdate, cp_flag, strike_price, best_bid, best_offer,
            volume, open_interest, impl_volatility, delta,
            am_settlement, expiry_indicator, forward_price
     FROM optionm.opprcd{YEAR}
