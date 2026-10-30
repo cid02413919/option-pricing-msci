@@ -86,5 +86,5 @@ print(f"S&P 500 on {DATE}: {S:.2f}")
 print(f"{len(opts)} options, {opts['exdate'].nunique()} expiries")
 print(opts.head())
 
-opts.to_csv(f"source/data/spx_options_{DATE}.csv", index=False)
+opts.to_csv(f"source/data/multi_option_single_day{DATE}.csv", index=False)
 # %%
