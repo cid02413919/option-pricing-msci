@@ -20,3 +20,11 @@ The merton model decreased the MSE significantly, especially for longer expiry o
 
 <img src="figures/real_vol_zeromean.png" width="600">
 The top one shows the zero-mean version of the realised volatility which is used more commonly. The bottom one shows the textbook definition of the realised volatility. The zero-mean is used in practice usually, we looked into the reason, its something to do with the P&L not being accurate when you use the textbook version, but we didnt really understand it. We will implement both to compare accuracy.
+
+We made the data importing methods so they could be imported when needed. We plotted the black-scholes using implied, historical (zero meaned), historical (demeaned) volatilities, and plotted against time.
+
+**Results:**
+
+<img src="figures/realised_vol_wrt_time.png" width="600">
+
+There can not be much difference between the 2 versions of historical vol, however it can be seen that it is sometimes off from the true market price.
