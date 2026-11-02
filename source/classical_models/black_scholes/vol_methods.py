@@ -166,3 +166,104 @@ def add_implied_vol_column(df, spot_col='S', strike_col='K', T_col='T',
 # symmetrically, but equity markets exhibit a leverage effect (down moves
 # raise vol more) -- use model='gjr-garch' (implemented below) or EGARCH
 # (models log-variance, not implemented here) to capture that asymmetry.
+
+def fit_garch(returns, model='garch', dist='normal'):
+    """Fit GARCH(1,1) or GJR-GARCH(1,1,1) by maximum likelihood on a 1D
+    array of (already demeaned, or not -- we demean internally) daily log
+    returns. Returns a dict of fitted parameters plus the final day's
+    conditional variance/residual, which garch_forecast_vol() needs to
+    roll the forecast forward."""
+    r = np.asarray(returns, dtype=float)
+    r = r - r.mean()                      # step 1: constant mean model (mu=0 after demeaning)
+    n = len(r)
+    var0 = np.var(r)                      # used both as x0 seed and as sigma_0^2
+
+    def unpack(x):
+        if model == 'garch':
+            omega, alpha, beta = x[:3]
+            gamma = 0.0
+        else:  # 'gjr-garch'
+            omega, alpha, beta, gamma = x[:4]
+        nu = x[-1] if dist == 't' else None
+        return omega, alpha, beta, gamma, nu
+
+    def neg_loglik(x):
+        omega, alpha, beta, gamma, nu = unpack(x)
+        # Hard-enforce positivity + stationarity (alpha+beta+0.5*gamma < 1):
+        if omega <= 0 or alpha < 0 or beta < 0 or gamma < 0 or alpha + beta + 0.5*gamma >= 1:
+            return 1e10
+        sig2 = np.empty(n)
+        sig2[0] = var0
+        for t in range(1, n):             # recursive variance filter, step 3
+            lev = gamma * r[t-1]**2 * (r[t-1] < 0)
+            sig2[t] = omega + alpha*r[t-1]**2 + beta*sig2[t-1] + lev
+        sig2 = np.maximum(sig2, 1e-12)
+        if dist == 'normal':
+            ll = -0.5*np.sum(np.log(2*np.pi*sig2) + r**2/sig2)
+        else:  # Student-t log-likelihood, fat tails
+            if nu is None or nu <= 2.0001:
+                return 1e10
+            c = gammaln((nu+1)/2) - gammaln(nu/2) - 0.5*np.log((nu-2)*np.pi)
+            ll = np.sum(c - 0.5*np.log(sig2) - ((nu+1)/2)*np.log(1 + r**2/((nu-2)*sig2)))
+        return -ll                         # minimize negative log-likelihood
+
+    if model == 'garch':
+        x0 = [var0*0.05, 0.05, 0.90]
+    else:
+        x0 = [var0*0.05, 0.03, 0.90, 0.05]
+    if dist == 't':
+        x0 = x0 + [8.0]
+
+    res = minimize(neg_loglik, x0, method='Nelder-Mead',
+                    options={'maxiter': 5000, 'xatol': 1e-8, 'fatol': 1e-8})
+    omega, alpha, beta, gamma, nu = unpack(res.x)
+
+    sig2 = np.empty(n); sig2[0] = var0     # re-run filter once more at the optimum
+    for t in range(1, n):
+        lev = gamma * r[t-1]**2 * (r[t-1] < 0)
+        sig2[t] = omega + alpha*r[t-1]**2 + beta*sig2[t-1] + lev
+
+    return dict(omega=omega, alpha=alpha, beta=beta, gamma=gamma, nu=nu,
+                last_var=sig2[-1], last_resid=r[-1], loglik=-res.fun)
+
+
+def garch_forecast_vol(params, horizon_days, annualization=252):
+    """Step 4-6 of the recipe: roll the fitted GARCH recursion FORWARD
+    (no more real data available), average the path of forecasted daily
+    variances over `horizon_days`, annualize -- gives one number directly
+    usable as `sigma` in Black-Scholes or as v0/theta-scale inputs for
+    Heston, or as your realized_vol() drop-in in the trading workflow."""
+    omega, alpha, beta, gamma = params['omega'], params['alpha'], params['beta'], params['gamma']
+    sig2_t, eps_t = params['last_var'], params['last_resid']
+
+    # one-step-ahead forecast from the last observed day:
+    sig2_next = omega + alpha*eps_t**2 + beta*sig2_t + gamma*eps_t**2*(eps_t < 0)*0.5
+
+    # beyond one step, there's no more eps_t info -- the recursion mean-
+    # reverts geometrically toward the unconditional (long-run) variance at
+    # rate (alpha+beta+0.5*gamma) per day, which is the standard GARCH
+    # multi-step-ahead forecast formula:
+    persistence = alpha + beta + 0.5*gamma
+    uncond_var = omega / max(1e-10, (1 - persistence))
+    path = np.empty(horizon_days)
+    path[0] = sig2_next
+    for h in range(1, horizon_days):
+        path[h] = uncond_var + (persistence**h) * (sig2_next - uncond_var)
+
+    avg_daily_var = path.mean()            # step 5: cumulative/average variance over H days
+    return np.sqrt(avg_daily_var * annualization)   # step 6: annualize
+
+
+def forecast_realized_vol_garch(log_returns, horizon_days, model='gjr-garch',
+                                 dist='normal', annualization=252):
+    """One-call convenience wrapper: LOG RETURNS in -> forecast vol out.
+    (Previously took raw prices and derived returns internally via
+    np.diff(np.log(prices)) -- that conversion is removed since your data
+    source already provides daily log returns directly.) This is the
+    function to plug into realized_vol()/ml_forecast_vol() in
+    options_trading_workflow.py as your (classical) baseline forecaster that
+    RF/GBM/NN models should be benchmarked against."""
+    log_returns = np.asarray(log_returns, dtype=float)
+    params = fit_garch(log_returns, model=model, dist=dist)
+    vol = garch_forecast_vol(params, horizon_days, annualization)
+    return vol, params
