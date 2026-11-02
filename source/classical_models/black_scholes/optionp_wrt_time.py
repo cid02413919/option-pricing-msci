@@ -7,11 +7,11 @@ sys.path.append("source")  # tells python to look in source
 
 from pricing import black_scholes_call, black_scholes_put
 from vol_methods import historical_volatility_series
-from data_importing.data_import import single_option_multi_day, return_multi_day, get_vix
+from data_importing.data_import import single_option_multi_day, return_multi_day, get_vix, exercise_style
 
 # WRDS username, option and dates
 username = "kairogers"
-optionid = 155036252
+optionid = 155036260
 start, end = "2023-06-12", "2023-12-15"
 
 # ---- Load ----
@@ -21,7 +21,7 @@ rtn = return_multi_day(username, start, end, save=False).reset_index()   # date:
 # historical vol (lookback rows give the 60-day warm-up)
 rtn["hist_vol_zm"] = historical_volatility_series(rtn["log_return"], window=60, annualization=252, method="zero_mean")
 rtn["hist_vol_dm"] = historical_volatility_series(rtn["log_return"], window=60, annualization=252, method="demeaned")
-vix = get_vix(username, start, end, save=False)
+vix = get_vix(username, start, end, save=False).reset_index()
 opt = opt.merge(rtn[["date", "hist_vol_zm"]], on="date", how="left")
 opt = opt.merge(rtn[["date", "hist_vol_dm"]], on="date", how="left")
 opt = opt.merge(vix[["date", "vix_dec"]], on="date", how="left")
@@ -41,7 +41,7 @@ opt["bs_price_VIX"] = price_fn(opt["S"], K, opt["vix_dec"], opt["r"], opt["T"], 
 fig, ax = plt.subplots(figsize=(9, 5))
 
 ax.plot(opt["days"], opt["mid"], "o", ms=4, color="blue", alpha=0.8, label="Market mid")
-#ax.plot(opt["days"], opt["bs_price_implied"], "-", lw=2, color="green", label="Black–Scholes implied vol")
+ax.plot(opt["days"], opt["bs_price_implied"], "-", lw=2, color="pink", label="Black–Scholes implied vol")
 ax.plot(opt["days"], opt["bs_price_historical_zm"], "-", lw=2, color="orange", label="Black–Scholes zero-meaned historical vol")
 ax.plot(opt["days"], opt["bs_price_historical_dm"], "-", lw=2, color="red", label="Black–Scholes demeaned historical vol")
 ax.plot(opt["days"], opt["bs_price_VIX"], "-", lw=2, color="green", label="Black–Scholes VIX")
