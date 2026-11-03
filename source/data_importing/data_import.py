@@ -71,6 +71,98 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     return opts
 
 
+def multi_option_multi_day(username, dates, secid=108105, save=True):
+    """Return cleaned option chains for several trading days, stacked into one frame.
+
+    Same columns and filters as multi_option_single_day, but uses a single WRDS
+    connection and one query per year instead of one connection per date, so it
+    is much faster for many dates.
+
+    username : WRDS username
+    dates    : iterable of dates ("YYYY-MM-DD" strings or Timestamps)
+    secid    : OptionMetrics security id (108105 = SPX)
+    save     : if True, also writes source/data/multi_option_multi_day_{first}_{last}.csv
+    """
+    dates = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in dates)
+    by_year = {}
+    for d in dates:
+        by_year.setdefault(d[:4], []).append(d)
+
+    def in_list(ds):
+        return ", ".join(f"'{d}'" for d in ds)
+
+    db = wrds.Connection(wrds_username=username)
+
+    # opprcd/secprd are split by year; filter quotes in SQL so fewer rows come over the network
+    opts = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, optionid, exdate, cp_flag, strike_price, best_bid, best_offer,
+                   volume, open_interest, impl_volatility, delta,
+                   am_settlement, expiry_indicator, forward_price
+            FROM optionm.opprcd{y}
+            WHERE secid = {secid} AND date IN ({in_list(ds)})
+              AND best_bid > 0 AND impl_volatility IS NOT NULL
+        """, date_cols=["date", "exdate"])
+        for y, ds in by_year.items()
+    ], ignore_index=True)
+
+    spot = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, close FROM optionm.secprd{y}
+            WHERE secid = {secid} AND date IN ({in_list(ds)})
+        """, date_cols=["date"])
+        for y, ds in by_year.items()
+    ], ignore_index=True)
+
+    zc = db.raw_sql(f"""
+        SELECT date, days, rate FROM optionm.zerocd
+        WHERE date IN ({in_list(dates)}) ORDER BY date, days
+    """, date_cols=["date"])
+
+    div = db.raw_sql(f"""
+        SELECT date, rate FROM optionm.idxdvd
+        WHERE secid = {secid} AND date IN ({in_list(dates)})
+    """, date_cols=["date"])
+
+    db.close()
+
+    if opts.empty or spot.empty:
+        raise ValueError(f"No data for secid {secid} on any of the requested dates")
+
+    missing = sorted(set(pd.to_datetime(dates)) - set(opts["date"]))
+    if missing:
+        print(f"Warning: no option data on {len(missing)} date(s): {[d.date() for d in missing]}")
+
+    # ---- Tidy up ----
+    opts["strike"] = opts["strike_price"] / 1000                     # stored x1000
+    opts["mid"] = (opts["best_bid"] + opts["best_offer"]) / 2
+    opts["days"] = (opts["exdate"] - opts["date"]).dt.days
+    opts["T"] = opts["days"] / 365
+    opts["S"] = opts["date"].map(spot.set_index("date")["close"])
+
+    # r: each day's zero curve, interpolated to each option's maturity
+    opts["r"] = np.nan
+    for d, curve in zc.groupby("date"):
+        rows = opts["date"] == d
+        opts.loc[rows, "r"] = np.interp(opts.loc[rows, "days"], curve["days"], curve["rate"]) / 100
+
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    if not div.empty:
+        opts["q"] = opts["date"].map(div.set_index("date")["rate"]) / 100
+        opts["q_source"] = "idxdvd"
+    else:
+        q = trailing_dividend_yield(username, secid, dates[0], dates[-1], save=False)["q"]
+        opts["q"] = opts["date"].map(q)
+        opts["q_source"] = "trailing_distrd"
+
+    opts = opts.sort_values(["date", "optionid"]).reset_index(drop=True)
+
+    if save:
+        opts.to_csv(f"source/data/multi_option_multi_day_{dates[0]}_{dates[-1]}.csv", index=False)
+
+    return opts
+
+
 def single_option_multi_day(username, optionid, start, end, secid=108105, save=True):
     """Return daily quotes for one option between start and end, with S, r, q, T and mid.
 
@@ -298,7 +390,14 @@ def get_vix(username, start, end, save=True):
 
     VIX is quoted in vol points (20 = 20% annualised); 'vix_dec' is the
     close as a decimal (0.20), ready to use alongside implied vols.
+
+    To avoid look-ahead leakage, each row holds the *previous* trading day's
+    VIX: the value on date t is the VIX from t-1, so it is known before any
+    option on date t is priced.
     """
+    # Need the trading day before start too; 10 calendar days covers weekends/holidays
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+
     db = wrds.Connection(wrds_username=username)
 
     # cboe.cboe holds all the Cboe vol indices (VIX, VXO, VXN, VXD) side by side;
@@ -307,7 +406,7 @@ def get_vix(username, start, end, save=True):
     raw = db.raw_sql(f"""
         SELECT *
         FROM cboe.cboe
-        WHERE date BETWEEN '{start}' AND '{end}'
+        WHERE date BETWEEN '{fetch_start}' AND '{end}'
     """, date_cols=["date"])
 
     db.close()
@@ -324,6 +423,13 @@ def get_vix(username, start, end, save=True):
     assert vix.index.is_unique, "duplicate dates"
 
     vix["vix_dec"] = vix["close"] / 100         # 20 -> 0.20
+
+    # Lag by one trading day: date t now holds t-1's values, then trim to [start, end]
+    vix = vix.shift(1)
+    vix = vix[vix.index >= pd.Timestamp(start)].dropna(subset=["close"])
+
+    if vix.empty:
+        raise ValueError(f"No lagged VIX data between {start} and {end}")
 
     if save:
         vix.to_csv(f"source/data/vix_{start}_{end}.csv")

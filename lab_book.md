@@ -50,3 +50,15 @@ We dont have european options of sectors grouped, so we will use american ones i
 There is no index options data available for certain sectors after 2019, therefore we have to use the ETFs intead. We will have to state the approximation of American options as European options.
 
 The dividend rate isnt available for ETFs, so we need to calculate it ourselves. Dividend rates for european index options that we have been using until now use CP parity, to calculate the implied dividend rate from the market prices. This contains the market prices so technically if used, it is a circular argument. That means that the prices we have done so far have been circular arguments. Another way to calculate the dividend rate is by using the past dividends, and assume that it will be the same for the lifetime of the option. This can be continuous (measure the total dividends paid in the last year, divide by the current stock price and convert to continuous compounding: q = ln(1 + D/S)), or discrete (assume the dates and ammounts of the dividends paid last year will be the same this year, so calcualte the dividends that are suggested to be paid within the lifetime of the option, take away from the stock price, and calc option price using q = 0). We will use the continuous dividend, as it is easier to calculate. We may also want to consider lagging the q used for the previous calcs on the SXP, to stop it from being circular.
+
+## 03/11/2026
+
+**Aims:**
+
+- To obtain numerical justification for volatility method
+
+"The importance of the loss function in option valuation", states that 1. Models should be trained and evaluated on the same loss function (or quantified error), otherwise it will result in an inoptimal model. 2. When comparing models we should use the same loss function to compare throughout.
+
+<img src="figures/error_types.png" width="600">
+
+Christoffersen & Jacobs found that parameters chosen to minimise squared dollar errors also perform reasonably well when judged by other error measures. We will use the RMSE as it shares the benifits of the MSE but is easier to interpret.

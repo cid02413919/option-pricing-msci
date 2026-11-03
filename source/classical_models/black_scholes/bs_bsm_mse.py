@@ -1,10 +1,11 @@
 #%%
 import sys
-from source.classical_models.black_scholes.bs_funcs import black_scholes_call
+sys.path.append("source")  # tells python to look in source (run from repo root)
+sys.path.append("../..")
+
+from classical_models.black_scholes.bs_funcs import black_scholes_call
 import matplotlib.pyplot as plt
 
-sys.path.append("source")  # tells python to look in source (run from repo root)
-sys.path.append("../..")   # same, when run from this folder (interactive cells)
 from data_importing.data_import import multi_option_single_day, return_multi_day
 
 username = "kairogers"
@@ -78,7 +79,7 @@ ax.plot(mse_by_expiry.index, mse_by_expiry["sq_err_bs"],  "o-", label="Black-Sch
 ax.plot(mse_by_expiry.index, mse_by_expiry["sq_err_bsm"], "s-", label="Black-Scholes-Merton (with q)")
 ax.set_xlabel("Days to expiry")
 ax.set_ylabel("MSE (index points²)")
-ax.set_yscale("log")
+#ax.set_yscale("log")
 ax.set_title("SPX calls, 2024-06-12: pricing error by expiry")
 ax.legend()
 ax.grid(True, alpha=0.3)
