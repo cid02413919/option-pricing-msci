@@ -19,6 +19,7 @@ The merton model decreased the MSE significantly, especially for longer expiry o
 - To implement realised vol
 
 <img src="figures/real_vol_zeromean.png" width="600">
+
 The top one shows the zero-mean version of the realised volatility which is used more commonly. The bottom one shows the textbook definition of the realised volatility. The zero-mean is used in practice usually, we looked into the reason, its something to do with the P&L not being accurate when you use the textbook version, but we didnt really understand it. We will implement both to compare accuracy.
 
 We made the data importing methods so they could be imported when needed. We plotted the black-scholes using implied, historical (zero meaned), historical (demeaned) volatilities, and plotted against time.
@@ -62,3 +63,7 @@ The dividend rate isnt available for ETFs, so we need to calculate it ourselves.
 <img src="figures/error_types.png" width="600">
 
 Christoffersen & Jacobs found that parameters chosen to minimise squared dollar errors also perform reasonably well when judged by other error measures. We will use the RMSE as it shares the benifits of the MSE but is easier to interpret.
+
+<img src="figures/vol_methods_3_loss_funcs.png" width="600">
+
+<img src="figures/vol_method_3_loss_function_moneyness.png" width="600">
