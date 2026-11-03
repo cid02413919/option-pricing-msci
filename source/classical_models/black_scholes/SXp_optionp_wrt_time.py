@@ -1,22 +1,23 @@
-#%%
 import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 
 sys.path.append("source")  # tells python to look in source
 
-from pricing import black_scholes_call, black_scholes_put
-from vol_methods import historical_volatility_series
-from data_importing.data_import import single_option_multi_day, return_multi_day, get_vix, exercise_style
+from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put
+from classical_models.black_scholes.vol_funcs import historical_volatility_series
+from data_importing.data_import import single_option_multi_day, return_multi_day, get_vix
 
 # WRDS username, option and dates
 username = "kairogers"
-optionid = 155036260
+# SPX call chosen from multi_option_single_day(username, start, secid=108105) on start:
+# calls only, expiry closest to end (2023-12-15), then strike closest to spot (K = 4350, S = 4338.93)
+optionid = 137934713
 start, end = "2023-06-12", "2023-12-15"
 
 # ---- Load ----
-opt = single_option_multi_day(username, optionid, start, end, save=False)
-rtn = return_multi_day(username, start, end, save=False).reset_index()   # date: index -> column
+opt = single_option_multi_day(username, optionid, start, end, secid=108105, save=False)
+rtn = return_multi_day(username, start, end, secid=108105, save=False).reset_index()   # date: index -> column
 
 # historical vol (lookback rows give the 60-day warm-up)
 rtn["hist_vol_zm"] = historical_volatility_series(rtn["log_return"], window=60, annualization=252, method="zero_mean")
@@ -56,5 +57,3 @@ ax.legend(frameon=False)
 
 fig.tight_layout()
 plt.show()
-
-# %%

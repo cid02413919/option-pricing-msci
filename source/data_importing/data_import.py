@@ -54,7 +54,14 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     opts["T"] = opts["days"] / 365
     opts["S"] = spot["close"].iloc[0]
     opts["r"] = np.interp(opts["days"], zc["days"], zc["rate"]) / 100  # % -> decimal
-    opts["q"] = div["rate"].iloc[0] / 100
+
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    if not div.empty:
+        opts["q"] = div["rate"].iloc[0] / 100
+        opts["q_source"] = "idxdvd"
+    else:
+        opts["q"] = trailing_dividend_yield(username, secid, date, date, save=False)["q"].iloc[0]
+        opts["q_source"] = "trailing_distrd"
 
     opts = opts[(opts["best_bid"] > 0) & opts["impl_volatility"].notna()].reset_index(drop=True)
 
@@ -137,8 +144,14 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
     # S: that day's index close
     opt = opt.merge(spot.rename(columns={"close": "S"}), on="date", how="left")
 
-    # q: that day's dividend yield (carries the last value forward if a day is missing)
-    div["q"] = div["rate"] / 100
+    # q: that day's dividend yield (carries the last value forward if a day is missing);
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    if not div.empty:
+        div["q"] = div["rate"] / 100
+        opt["q_source"] = "idxdvd"
+    else:
+        div = trailing_dividend_yield(username, secid, start, end, save=False).reset_index()
+        opt["q_source"] = "trailing_distrd"
     opt = pd.merge_asof(opt, div[["date", "q"]].sort_values("date"), on="date")
 
     # r: that day's zero curve, interpolated to the option's remaining maturity
@@ -150,6 +163,82 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
         opt.to_csv(f"source/data/single_option_multi_day_{start}-{end}.csv", index=False)
 
     return opt
+
+
+def trailing_dividend_yield(username, secid, start, end, save=True):
+    """Return daily S, trailing 12-month cash dividends and continuous dividend yield q.
+
+    username   : WRDS username
+    secid      : OptionMetrics security id (e.g. 110007 = XLB)
+    start, end : "YYYY-MM-DD"
+    save       : if True, also writes source/data/trailing_dividend_yield_{secid}_{start}_{end}.csv
+
+    For each trading day t, div_12m is the sum of regular cash dividends with
+    ex-date in (t - 365 days, t], and q = ln(1 + div_12m / S) as a decimal.
+    Only past ex-dates are used, so there is no look-ahead.
+    """
+    # Need a full year of distributions before the first date
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+
+    db = wrds.Connection(wrds_username=username)
+
+    # secprd is split into one table per year, so query each year and stack them
+    spot = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, close
+            FROM optionm.secprd{y}
+            WHERE secid = {secid}
+              AND date BETWEEN '{max(start, f"{y}-01-01")}' AND '{min(end, f"{y}-12-31")}'
+        """, date_cols=["date"])
+        for y in range(int(start[:4]), int(end[:4]) + 1)
+    ]).set_index("date").sort_index()
+
+    # distr_type: 1 regular dividend, 2 split, 3 stock dividend (4 capital gain, 5 special excluded)
+    dist = db.raw_sql(f"""
+        SELECT ex_date, amount, distr_type, adj_factor
+        FROM optionm.distrd
+        WHERE secid = {secid}
+          AND distr_type IN ('1', '2', '3')
+          AND cancel_flag = '0'
+          AND ex_date > '{fetch_start}' AND ex_date <= '{end}'
+        ORDER BY ex_date
+    """, date_cols=["ex_date"])
+
+    db.close()
+
+    if spot.empty:
+        raise ValueError(f"No prices for secid {secid} between {start} and {end}")
+    assert spot.index.is_unique, "duplicate dates"
+
+    # Splits change the share basis, so amounts and prices across one aren't comparable
+    splits = dist[dist["distr_type"].isin(["2", "3"]) & (dist["adj_factor"] != 1)]
+    if not splits.empty:
+        print(f"Warning: split(s) for secid {secid} within the 12m windows, "
+              f"div_12m mixes share bases:\n{splits[['ex_date', 'adj_factor']]}")
+
+    divs = dist[dist["distr_type"] == "1"]
+    ex = divs["ex_date"].values
+    cum = np.concatenate([[0.0], divs["amount"].cumsum().values])
+
+    # Sum over ex-dates in (t - 365, t]: cumulative sum up to t minus up to t - 365
+    t = spot.index.values
+    hi = np.searchsorted(ex, t, side="right")
+    lo = np.searchsorted(ex, (spot.index - pd.Timedelta(days=365)).values, side="right")
+
+    spot["S"] = spot["close"].abs()                    # negative close = bid-ask average
+    spot["div_12m"] = cum[hi] - cum[lo]
+    spot["q"] = np.log1p(spot["div_12m"] / spot["S"])
+    spot = spot[["S", "div_12m", "q"]]
+
+    n_zero = (spot["div_12m"] == 0).sum()
+    if n_zero:
+        print(f"Warning: no distributions in the past year on {n_zero} of {len(spot)} days "
+              f"for secid {secid}, q = 0 there")
+
+    if save:
+        spot.to_csv(f"source/data/trailing_dividend_yield_{secid}_{start}_{end}.csv")
+
+    return spot
 
 
 def return_multi_day(username, start, end, lookback=60, secid=108105, save=True):
@@ -288,6 +377,5 @@ def exercise_style(username, optionid, year=None):
 
 if __name__ == "__main__":
     username = "kairogers"
-    vix = get_vix(username, "2023-06-12", "2023-12-15", save=False)
-    print(f"{len(vix)} trading days: {vix.index[0].date()} to {vix.index[-1].date()}")
-    print(vix.head())
+    date = "2024-06-12"
+    multi_option_single_day(username, date, secid=110007, save=True)
