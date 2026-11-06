@@ -8,13 +8,15 @@ import numpy as np
 import pandas as pd
 
 
-def multi_option_single_day(username, date, secid=108105, save=True):
+def multi_option_single_day(username, date, secid=108105, save=True, calc_q=False):
     """Return a cleaned option chain for one trading day.
 
     username : WRDS username
     date     : "YYYY-MM-DD"
     secid    : OptionMetrics security id (108105 = SPX)
     save     : if True, also writes source/data/multi_option_single_day{date}.csv
+    calc_q   : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+               dividends (trailing_dividend_yield); if False, q is left out in that case
     """
     year = date[:4]
     db = wrds.Connection(wrds_username=username)
@@ -55,11 +57,11 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     opts["S"] = spot["close"].iloc[0]
     opts["r"] = np.interp(opts["days"], zc["days"], zc["rate"]) / 100  # % -> decimal
 
-    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
     if not div.empty:
         opts["q"] = div["rate"].iloc[0] / 100
         opts["q_source"] = "idxdvd"
-    else:
+    elif calc_q:
         opts["q"] = trailing_dividend_yield(username, secid, date, date, save=False)["q"].iloc[0]
         opts["q_source"] = "trailing_distrd"
 
@@ -71,7 +73,7 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     return opts
 
 
-def multi_option_multi_day(username, dates, secid=108105, save=True):
+def multi_option_multi_day(username, dates, secid=108105, save=True, calc_q=False):
     """Return cleaned option chains for several trading days, stacked into one frame.
 
     Same columns and filters as multi_option_single_day, but uses a single WRDS
@@ -82,6 +84,8 @@ def multi_option_multi_day(username, dates, secid=108105, save=True):
     dates    : iterable of dates ("YYYY-MM-DD" strings or Timestamps)
     secid    : OptionMetrics security id (108105 = SPX)
     save     : if True, also writes source/data/multi_option_multi_day_{first}_{last}.csv
+    calc_q   : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+               dividends (trailing_dividend_yield); if False, q is left out in that case
     """
     dates = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in dates)
     by_year = {}
@@ -146,11 +150,11 @@ def multi_option_multi_day(username, dates, secid=108105, save=True):
         rows = opts["date"] == d
         opts.loc[rows, "r"] = np.interp(opts.loc[rows, "days"], curve["days"], curve["rate"]) / 100
 
-    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
     if not div.empty:
         opts["q"] = opts["date"].map(div.set_index("date")["rate"]) / 100
         opts["q_source"] = "idxdvd"
-    else:
+    elif calc_q:
         q = trailing_dividend_yield(username, secid, dates[0], dates[-1], save=False)["q"]
         opts["q"] = opts["date"].map(q)
         opts["q_source"] = "trailing_distrd"
@@ -163,7 +167,7 @@ def multi_option_multi_day(username, dates, secid=108105, save=True):
     return opts
 
 
-def single_option_multi_day(username, optionid, start, end, secid=108105, save=True):
+def single_option_multi_day(username, optionid, start, end, secid=108105, save=True, calc_q=False):
     """Return daily quotes for one option between start and end, with S, r, q, T and mid.
 
     username   : WRDS username
@@ -171,6 +175,8 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
     start, end : "YYYY-MM-DD" (can span several years)
     secid      : OptionMetrics security id (108105 = SPX)
     save       : if True, also writes source/data/single_option_multi_day{start}-{end}.csv
+    calc_q     : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+                 dividends (trailing_dividend_yield); if False, q is left out in that case
     """
     years = range(int(start[:4]), int(end[:4]) + 1)
 
@@ -237,14 +243,15 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
     opt = opt.merge(spot.rename(columns={"close": "S"}), on="date", how="left")
 
     # q: that day's dividend yield (carries the last value forward if a day is missing);
-    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
     if not div.empty:
         div["q"] = div["rate"] / 100
         opt["q_source"] = "idxdvd"
-    else:
+    elif calc_q:
         div = trailing_dividend_yield(username, secid, start, end, save=False).reset_index()
         opt["q_source"] = "trailing_distrd"
-    opt = pd.merge_asof(opt, div[["date", "q"]].sort_values("date"), on="date")
+    if "q_source" in opt:
+        opt = pd.merge_asof(opt, div[["date", "q"]].sort_values("date"), on="date")
 
     # r: that day's zero curve, interpolated to the option's remaining maturity
     curves = {d: g for d, g in zc.groupby("date")}
@@ -379,6 +386,23 @@ def return_multi_day(username, start, end, lookback=60, secid=108105, save=True)
         spot.to_csv(f"source/data/return_multi_day_{start}_{end}_lb{lookback}.csv")
 
     return spot
+
+
+def wednesdays(trading_days, start, end):
+    """Every Wednesday from start to end, or the Tuesday before if Wednesday is a holiday.
+
+    trading_days : DatetimeIndex of days the market was open (e.g. the index of return_multi_day)
+    Weeks where both are holidays are skipped.
+    """
+    trading_days = pd.DatetimeIndex(trading_days)
+    dates = []
+    for wed in pd.date_range(start, end, freq="W-WED"):
+        tue = wed - pd.Timedelta(days=1)
+        if wed in trading_days:
+            dates.append(wed)
+        elif tue in trading_days:
+            dates.append(tue)
+    return pd.DatetimeIndex(dates)
 
 
 def get_vix(username, start, end, save=True):

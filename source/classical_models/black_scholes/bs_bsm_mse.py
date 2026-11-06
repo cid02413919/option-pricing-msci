@@ -10,7 +10,10 @@ from data_importing.data_import import multi_option_single_day, return_multi_day
 
 username = "kairogers"
 
-df = multi_option_single_day(username, "2024-06-12", secid=110007,  save=False)
+# ---- Settings: switch these on/off ----
+SAVE_FIG = False   # True saves the figure(s) to figures/
+
+df = multi_option_single_day(username, "2024-06-12", secid=110007, save=False, calc_q=True)
 spot = return_multi_day(username, "2023-10-01", "2024-12-31", lookback=0, save=False)
 
 #%% Calculating overall MSE for black scholes including and not including dividend
@@ -84,4 +87,7 @@ ax.set_title("SPX calls, 2024-06-12: pricing error by expiry")
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
+if SAVE_FIG:
+    fig.savefig("figures/mse_by_expiry.png", dpi=300, bbox_inches="tight")
 plt.show()
+

@@ -7,9 +7,8 @@ import matplotlib.pyplot as plt
 
 sys.path.append("source")  # tells python to look in source
 
-from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put
-from classical_models.black_scholes.vol_funcs import historical_volatility_series
-from data_importing.data_import import multi_option_multi_day, return_multi_day, get_vix
+from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put, historical_volatility_series
+from data_importing.data_import import multi_option_multi_day, return_multi_day, get_vix, wednesdays
 
 # secid -> (ticker, name). The XL... are sector ETFs (American options), SPX is an index (European)
 SECURITIES = {
@@ -31,6 +30,10 @@ SECURITIES = {
 username = "kairogers"
 start, end = "2019-01-01", "2023-12-31"
 
+# ---- Settings: switch these on/off ----
+SHOW_ALL_ERRORS = False   # True also does median absolute error and MAPE (RMSE is always done)
+SAVE_FIG = False          # True saves the figure(s) to figures/
+
 # vol methods to compare, and their plot colours
 methods = {"hist_vol_zm": "zero-mean historical vol",
            "hist_vol_dm": "demeaned historical vol",
@@ -48,22 +51,22 @@ vix = get_vix(username, start, end, save=False)
 #%%
 # ---- Functions ----
 def load_options(secid):
-    """Option chains on the first trading day of each month, with each vol method attached."""
+    """Option chains on every Wednesday (Tuesday if Wednesday is a holiday), with each vol method attached."""
     # historical vol for every day: rolling 60-day vol, shifted one day so day t only uses returns up to t-1
     rtn = return_multi_day(username, start, end, lookback=60, secid=secid, save=False)
     rtn["hist_vol_zm"] = historical_volatility_series(rtn["log_return"], window=60, method="zero_mean").shift(1)
     rtn["hist_vol_dm"] = historical_volatility_series(rtn["log_return"], window=60, method="demeaned").shift(1)
     rtn = rtn[rtn["lookback"] == False]
 
-    # the dates we price on: the first trading day of each month
-    dates = rtn.groupby(rtn.index.to_period("M")).head(1).index
+    # the dates we price on: every Wednesday (Tuesday if Wednesday is a holiday)
+    dates = wednesdays(rtn.index, start, end)
 
     # downloading takes a while, so save it to a file the first time and load the file after that
-    cache_file = f"source/data/cache_mse_chains_{secid}_{start}_{end}.pkl"
+    cache_file = f"source/data/cache_weekly_chains_{secid}_{start}_{end}.pkl"
     if os.path.exists(cache_file):
         df = pd.read_pickle(cache_file)
     else:
-        df = multi_option_multi_day(username, dates, secid=secid, save=False)
+        df = multi_option_multi_day(username, dates, secid=secid, save=False, calc_q=True)
         df.to_pickle(cache_file)
 
     # remove options that expire on the day itself
@@ -85,51 +88,55 @@ def add_errors(df):
         model_price = np.where(is_call, call_price, put_price)
 
         error = model_price - df["mid"]
-        df[f"sq_err_{col}"] = error ** 2                        # for RMSE
-        df[f"abs_err_{col}"] = np.abs(error)                    # for median absolute error
-        df[f"abs_pct_err_{col}"] = np.abs(error) / df["mid"]    # for MAPE (mid > 0 since best_bid > 0)
+        df[f"sq_err_{col}"] = error ** 2                            # for RMSE
+        if SHOW_ALL_ERRORS:
+            df[f"abs_err_{col}"] = np.abs(error)                    # for median absolute error
+            df[f"abs_pct_err_{col}"] = np.abs(error) / df["mid"]    # for MAPE (mid > 0 since best_bid > 0)
     return df
 
 
 def error_tables(df, bucket_col):
-    """RMSE, median absolute error and MAPE for each vol method, in each bucket of `bucket_col`."""
+    """RMSE (plus median absolute error and MAPE if SHOW_ALL_ERRORS) for each vol method, in each bucket of `bucket_col`."""
     groups = df.groupby(bucket_col, observed=True)
     rmse = {}   # root mean squared error, $
     mdae = {}   # median absolute error, $
     mape = {}   # mean absolute percentage error, %
     for col in methods:
         rmse[col] = np.sqrt(groups[f"sq_err_{col}"].mean())
-        mdae[col] = groups[f"abs_err_{col}"].median()
-        mape[col] = groups[f"abs_pct_err_{col}"].mean() * 100
+        if SHOW_ALL_ERRORS:
+            mdae[col] = groups[f"abs_err_{col}"].median()
+            mape[col] = groups[f"abs_pct_err_{col}"].mean() * 100
     return pd.DataFrame(rmse), pd.DataFrame(mdae), pd.DataFrame(mape)
 
 
-def plot_errors(rmse, mdae, mape, xlabel, title):
-    """One figure with 3 panels: RMSE, median absolute error, MAPE."""
-    fig, (ax_rmse, ax_mdae, ax_mape) = plt.subplots(1, 3, figsize=(19, 5))
+def plot_errors(rmse, mdae, mape, xlabel, title, fname):
+    """One figure: an RMSE panel, plus median absolute error and MAPE panels if SHOW_ALL_ERRORS."""
+    # one panel per error metric (just RMSE unless SHOW_ALL_ERRORS)
+    panels = [(rmse, "RMSE ($ per unit)")]
+    if SHOW_ALL_ERRORS:
+        panels += [(mdae, "Median absolute error ($ per unit)"),
+                   (mape, "Mean absolute percentage error (%)")]
+    fig, axes = plt.subplots(1, len(panels), figsize=(19, 5) if SHOW_ALL_ERRORS else (8, 5), squeeze=False)
+    axes = axes[0]
 
     labels = [f"{b.left}–{b.right}" for b in rmse.index]
-    for col, name in methods.items():
-        ax_rmse.plot(labels, rmse[col], "o-", lw=2, color=colours[col], label=f"Black–Scholes {name}")
-        ax_mdae.plot(labels, mdae[col], "o-", lw=2, color=colours[col], label=f"Black–Scholes {name}")
-        ax_mape.plot(labels, mape[col], "o-", lw=2, color=colours[col], label=f"Black–Scholes {name}")
-
-    ax_rmse.set_ylabel("RMSE ($ per unit)")
-    ax_mdae.set_ylabel("Median absolute error ($ per unit)")
-    ax_mape.set_ylabel("Mean absolute percentage error (%)")
-
-    for ax in (ax_rmse, ax_mdae, ax_mape):
+    for ax, (values, ylabel) in zip(axes, panels):
+        for col, name in methods.items():
+            ax.plot(labels, values[col], "o-", lw=2, color=colours[col], label=f"Black–Scholes {name}")
+        ax.set_ylabel(ylabel)
         ax.set_xlabel(xlabel)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-    ax_rmse.legend(frameon=False)
+    axes[0].legend(frameon=False)
 
     fig.suptitle(title, x=0.01, ha="left", fontweight="bold")
     fig.tight_layout()
+    if SAVE_FIG:
+        fig.savefig(f"figures/{fname}.png", dpi=300, bbox_inches="tight")
     plt.show()
 
 #%%
-# ---- For each security: 3 plots by maturity, then 3 plots by moneyness ----
+# ---- For each security: error plots by maturity, then by moneyness ----
 for secid, (ticker, name) in SECURITIES.items():
     try:
         df = load_options(secid)
@@ -146,10 +153,11 @@ for secid, (ticker, name) in SECURITIES.items():
 
     rmse, mdae, mape = error_tables(df, "maturity")
     plot_errors(rmse, mdae, mape, "Days to expiry",
-                f"{ticker} ({name}) options, pricing error by maturity, {start} to {end} (monthly)")
+                f"{ticker} ({name}) options, pricing error by maturity, {start} to {end} (weekly)", f"error_{ticker}_wrt_maturity")
 
     rmse, mdae, mape = error_tables(df, "moneyness_bin")
     plot_errors(rmse, mdae, mape, "Moneyness (K / S)",
-                f"{ticker} ({name}) options, pricing error by moneyness, {start} to {end} (monthly)")
+                f"{ticker} ({name}) options, pricing error by moneyness, {start} to {end} (weekly)", f"error_{ticker}_wrt_moneyness")
 
 # %%
+
