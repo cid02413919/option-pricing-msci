@@ -8,13 +8,15 @@ import numpy as np
 import pandas as pd
 
 
-def multi_option_single_day(username, date, secid=108105, save=True):
+def multi_option_single_day(username, date, secid=108105, save=True, calc_q=False):
     """Return a cleaned option chain for one trading day.
 
     username : WRDS username
     date     : "YYYY-MM-DD"
     secid    : OptionMetrics security id (108105 = SPX)
     save     : if True, also writes source/data/multi_option_single_day{date}.csv
+    calc_q   : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+               dividends (trailing_dividend_yield); if False, q is left out in that case
     """
     year = date[:4]
     db = wrds.Connection(wrds_username=username)
@@ -54,7 +56,14 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     opts["T"] = opts["days"] / 365
     opts["S"] = spot["close"].iloc[0]
     opts["r"] = np.interp(opts["days"], zc["days"], zc["rate"]) / 100  # % -> decimal
-    opts["q"] = div["rate"].iloc[0] / 100
+
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
+    if not div.empty:
+        opts["q"] = div["rate"].iloc[0] / 100
+        opts["q_source"] = "idxdvd"
+    elif calc_q:
+        opts["q"] = trailing_dividend_yield(username, secid, date, date, save=False)["q"].iloc[0]
+        opts["q_source"] = "trailing_distrd"
 
     opts = opts[(opts["best_bid"] > 0) & opts["impl_volatility"].notna()].reset_index(drop=True)
 
@@ -64,7 +73,101 @@ def multi_option_single_day(username, date, secid=108105, save=True):
     return opts
 
 
-def single_option_multi_day(username, optionid, start, end, secid=108105, save=True):
+def multi_option_multi_day(username, dates, secid=108105, save=True, calc_q=False):
+    """Return cleaned option chains for several trading days, stacked into one frame.
+
+    Same columns and filters as multi_option_single_day, but uses a single WRDS
+    connection and one query per year instead of one connection per date, so it
+    is much faster for many dates.
+
+    username : WRDS username
+    dates    : iterable of dates ("YYYY-MM-DD" strings or Timestamps)
+    secid    : OptionMetrics security id (108105 = SPX)
+    save     : if True, also writes source/data/multi_option_multi_day_{first}_{last}.csv
+    calc_q   : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+               dividends (trailing_dividend_yield); if False, q is left out in that case
+    """
+    dates = sorted(pd.Timestamp(d).strftime("%Y-%m-%d") for d in dates)
+    by_year = {}
+    for d in dates:
+        by_year.setdefault(d[:4], []).append(d)
+
+    def in_list(ds):
+        return ", ".join(f"'{d}'" for d in ds)
+
+    db = wrds.Connection(wrds_username=username)
+
+    # opprcd/secprd are split by year; filter quotes in SQL so fewer rows come over the network
+    opts = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, optionid, exdate, cp_flag, strike_price, best_bid, best_offer,
+                   volume, open_interest, impl_volatility, delta,
+                   am_settlement, expiry_indicator, forward_price
+            FROM optionm.opprcd{y}
+            WHERE secid = {secid} AND date IN ({in_list(ds)})
+              AND best_bid > 0 AND impl_volatility IS NOT NULL
+        """, date_cols=["date", "exdate"])
+        for y, ds in by_year.items()
+    ], ignore_index=True)
+
+    spot = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, close FROM optionm.secprd{y}
+            WHERE secid = {secid} AND date IN ({in_list(ds)})
+        """, date_cols=["date"])
+        for y, ds in by_year.items()
+    ], ignore_index=True)
+
+    zc = db.raw_sql(f"""
+        SELECT date, days, rate FROM optionm.zerocd
+        WHERE date IN ({in_list(dates)}) ORDER BY date, days
+    """, date_cols=["date"])
+
+    div = db.raw_sql(f"""
+        SELECT date, rate FROM optionm.idxdvd
+        WHERE secid = {secid} AND date IN ({in_list(dates)})
+    """, date_cols=["date"])
+
+    db.close()
+
+    if opts.empty or spot.empty:
+        raise ValueError(f"No data for secid {secid} on any of the requested dates")
+
+    missing = sorted(set(pd.to_datetime(dates)) - set(opts["date"]))
+    if missing:
+        print(f"Warning: no option data on {len(missing)} date(s): {[d.date() for d in missing]}")
+
+    # ---- Tidy up ----
+    opts["strike"] = opts["strike_price"] / 1000                     # stored x1000
+    opts["mid"] = (opts["best_bid"] + opts["best_offer"]) / 2
+    opts["days"] = (opts["exdate"] - opts["date"]).dt.days
+    opts["T"] = opts["days"] / 365
+    opts["S"] = opts["date"].map(spot.set_index("date")["close"])
+
+    # r: each day's zero curve, interpolated to each option's maturity
+    opts["r"] = np.nan
+    for d, curve in zc.groupby("date"):
+        rows = opts["date"] == d
+        opts.loc[rows, "r"] = np.interp(opts.loc[rows, "days"], curve["days"], curve["rate"]) / 100
+
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
+    if not div.empty:
+        opts["q"] = opts["date"].map(div.set_index("date")["rate"]) / 100
+        opts["q_source"] = "idxdvd"
+    elif calc_q:
+        q = trailing_dividend_yield(username, secid, dates[0], dates[-1], save=False)["q"]
+        opts["q"] = opts["date"].map(q)
+        opts["q_source"] = "trailing_distrd"
+
+    opts = opts.sort_values(["date", "optionid"]).reset_index(drop=True)
+
+    if save:
+        opts.to_csv(f"source/data/multi_option_multi_day_{dates[0]}_{dates[-1]}.csv", index=False)
+
+    return opts
+
+
+def single_option_multi_day(username, optionid, start, end, secid=108105, save=True, calc_q=False):
     """Return daily quotes for one option between start and end, with S, r, q, T and mid.
 
     username   : WRDS username
@@ -72,6 +175,8 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
     start, end : "YYYY-MM-DD" (can span several years)
     secid      : OptionMetrics security id (108105 = SPX)
     save       : if True, also writes source/data/single_option_multi_day{start}-{end}.csv
+    calc_q     : if True and there is no idxdvd dividend data (e.g. ETFs), calculate q from past
+                 dividends (trailing_dividend_yield); if False, q is left out in that case
     """
     years = range(int(start[:4]), int(end[:4]) + 1)
 
@@ -137,9 +242,16 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
     # S: that day's index close
     opt = opt.merge(spot.rename(columns={"close": "S"}), on="date", how="left")
 
-    # q: that day's dividend yield (carries the last value forward if a day is missing)
-    div["q"] = div["rate"] / 100
-    opt = pd.merge_asof(opt, div[["date", "q"]].sort_values("date"), on="date")
+    # q: that day's dividend yield (carries the last value forward if a day is missing);
+    # idxdvd only covers indices, so for anything else use the trailing 12m distribution yield (if calc_q)
+    if not div.empty:
+        div["q"] = div["rate"] / 100
+        opt["q_source"] = "idxdvd"
+    elif calc_q:
+        div = trailing_dividend_yield(username, secid, start, end, save=False).reset_index()
+        opt["q_source"] = "trailing_distrd"
+    if "q_source" in opt:
+        opt = pd.merge_asof(opt, div[["date", "q"]].sort_values("date"), on="date")
 
     # r: that day's zero curve, interpolated to the option's remaining maturity
     curves = {d: g for d, g in zc.groupby("date")}
@@ -150,6 +262,82 @@ def single_option_multi_day(username, optionid, start, end, secid=108105, save=T
         opt.to_csv(f"source/data/single_option_multi_day_{start}-{end}.csv", index=False)
 
     return opt
+
+
+def trailing_dividend_yield(username, secid, start, end, save=True):
+    """Return daily S, trailing 12-month cash dividends and continuous dividend yield q.
+
+    username   : WRDS username
+    secid      : OptionMetrics security id (e.g. 110007 = XLB)
+    start, end : "YYYY-MM-DD"
+    save       : if True, also writes source/data/trailing_dividend_yield_{secid}_{start}_{end}.csv
+
+    For each trading day t, div_12m is the sum of regular cash dividends with
+    ex-date in (t - 365 days, t], and q = ln(1 + div_12m / S) as a decimal.
+    Only past ex-dates are used, so there is no look-ahead.
+    """
+    # Need a full year of distributions before the first date
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=365)).strftime("%Y-%m-%d")
+
+    db = wrds.Connection(wrds_username=username)
+
+    # secprd is split into one table per year, so query each year and stack them
+    spot = pd.concat([
+        db.raw_sql(f"""
+            SELECT date, close
+            FROM optionm.secprd{y}
+            WHERE secid = {secid}
+              AND date BETWEEN '{max(start, f"{y}-01-01")}' AND '{min(end, f"{y}-12-31")}'
+        """, date_cols=["date"])
+        for y in range(int(start[:4]), int(end[:4]) + 1)
+    ]).set_index("date").sort_index()
+
+    # distr_type: 1 regular dividend, 2 split, 3 stock dividend (4 capital gain, 5 special excluded)
+    dist = db.raw_sql(f"""
+        SELECT ex_date, amount, distr_type, adj_factor
+        FROM optionm.distrd
+        WHERE secid = {secid}
+          AND distr_type IN ('1', '2', '3')
+          AND cancel_flag = '0'
+          AND ex_date > '{fetch_start}' AND ex_date <= '{end}'
+        ORDER BY ex_date
+    """, date_cols=["ex_date"])
+
+    db.close()
+
+    if spot.empty:
+        raise ValueError(f"No prices for secid {secid} between {start} and {end}")
+    assert spot.index.is_unique, "duplicate dates"
+
+    # Splits change the share basis, so amounts and prices across one aren't comparable
+    splits = dist[dist["distr_type"].isin(["2", "3"]) & (dist["adj_factor"] != 1)]
+    if not splits.empty:
+        print(f"Warning: split(s) for secid {secid} within the 12m windows, "
+              f"div_12m mixes share bases:\n{splits[['ex_date', 'adj_factor']]}")
+
+    divs = dist[dist["distr_type"] == "1"]
+    ex = divs["ex_date"].values
+    cum = np.concatenate([[0.0], divs["amount"].cumsum().values])
+
+    # Sum over ex-dates in (t - 365, t]: cumulative sum up to t minus up to t - 365
+    t = spot.index.values
+    hi = np.searchsorted(ex, t, side="right")
+    lo = np.searchsorted(ex, (spot.index - pd.Timedelta(days=365)).values, side="right")
+
+    spot["S"] = spot["close"].abs()                    # negative close = bid-ask average
+    spot["div_12m"] = cum[hi] - cum[lo]
+    spot["q"] = np.log1p(spot["div_12m"] / spot["S"])
+    spot = spot[["S", "div_12m", "q"]]
+
+    n_zero = (spot["div_12m"] == 0).sum()
+    if n_zero:
+        print(f"Warning: no distributions in the past year on {n_zero} of {len(spot)} days "
+              f"for secid {secid}, q = 0 there")
+
+    if save:
+        spot.to_csv(f"source/data/trailing_dividend_yield_{secid}_{start}_{end}.csv")
+
+    return spot
 
 
 def return_multi_day(username, start, end, lookback=60, secid=108105, save=True):
@@ -200,6 +388,23 @@ def return_multi_day(username, start, end, lookback=60, secid=108105, save=True)
     return spot
 
 
+def wednesdays(trading_days, start, end):
+    """Every Wednesday from start to end, or the Tuesday before if Wednesday is a holiday.
+
+    trading_days : DatetimeIndex of days the market was open (e.g. the index of return_multi_day)
+    Weeks where both are holidays are skipped.
+    """
+    trading_days = pd.DatetimeIndex(trading_days)
+    dates = []
+    for wed in pd.date_range(start, end, freq="W-WED"):
+        tue = wed - pd.Timedelta(days=1)
+        if wed in trading_days:
+            dates.append(wed)
+        elif tue in trading_days:
+            dates.append(tue)
+    return pd.DatetimeIndex(dates)
+
+
 def get_vix(username, start, end, save=True):
     """Return daily VIX open, high, low and close from `start` to `end`.
 
@@ -209,7 +414,14 @@ def get_vix(username, start, end, save=True):
 
     VIX is quoted in vol points (20 = 20% annualised); 'vix_dec' is the
     close as a decimal (0.20), ready to use alongside implied vols.
+
+    To avoid look-ahead leakage, each row holds the *previous* trading day's
+    VIX: the value on date t is the VIX from t-1, so it is known before any
+    option on date t is priced.
     """
+    # Need the trading day before start too; 10 calendar days covers weekends/holidays
+    fetch_start = (pd.Timestamp(start) - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
+
     db = wrds.Connection(wrds_username=username)
 
     # cboe.cboe holds all the Cboe vol indices (VIX, VXO, VXN, VXD) side by side;
@@ -218,7 +430,7 @@ def get_vix(username, start, end, save=True):
     raw = db.raw_sql(f"""
         SELECT *
         FROM cboe.cboe
-        WHERE date BETWEEN '{start}' AND '{end}'
+        WHERE date BETWEEN '{fetch_start}' AND '{end}'
     """, date_cols=["date"])
 
     db.close()
@@ -235,6 +447,13 @@ def get_vix(username, start, end, save=True):
     assert vix.index.is_unique, "duplicate dates"
 
     vix["vix_dec"] = vix["close"] / 100         # 20 -> 0.20
+
+    # Lag by one trading day: date t now holds t-1's values, then trim to [start, end]
+    vix = vix.shift(1)
+    vix = vix[vix.index >= pd.Timestamp(start)].dropna(subset=["close"])
+
+    if vix.empty:
+        raise ValueError(f"No lagged VIX data between {start} and {end}")
 
     if save:
         vix.to_csv(f"source/data/vix_{start}_{end}.csv")
@@ -288,6 +507,5 @@ def exercise_style(username, optionid, year=None):
 
 if __name__ == "__main__":
     username = "kairogers"
-    vix = get_vix(username, "2023-06-12", "2023-12-15", save=False)
-    print(f"{len(vix)} trading days: {vix.index[0].date()} to {vix.index[-1].date()}")
-    print(vix.head())
+    date = "2024-06-12"
+    multi_option_single_day(username, date, secid=110007, save=True)

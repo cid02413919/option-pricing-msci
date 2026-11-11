@@ -1,17 +1,19 @@
 #%%
 import sys
-import pandas as pd
-from pricing import black_scholes_call, realised_vol
-import numpy as np
+sys.path.append("source")  # tells python to look in source (run from repo root)
+sys.path.append("../..")
+
+from classical_models.black_scholes.bs_funcs import black_scholes_call
 import matplotlib.pyplot as plt
 
-sys.path.append("source")  # tells python to look in source (run from repo root)
-sys.path.append("../..")   # same, when run from this folder (interactive cells)
 from data_importing.data_import import multi_option_single_day, return_multi_day
 
 username = "kairogers"
 
-df = multi_option_single_day(username, "2024-06-12", secid=213612,  save=False)
+# ---- Settings: switch these on/off ----
+SAVE_FIG = False   # True saves the figure(s) to figures/
+
+df = multi_option_single_day(username, "2024-06-12", secid=110007, save=False, calc_q=True)
 spot = return_multi_day(username, "2023-10-01", "2024-12-31", lookback=0, save=False)
 
 #%% Calculating overall MSE for black scholes including and not including dividend
@@ -80,29 +82,12 @@ ax.plot(mse_by_expiry.index, mse_by_expiry["sq_err_bs"],  "o-", label="Black-Sch
 ax.plot(mse_by_expiry.index, mse_by_expiry["sq_err_bsm"], "s-", label="Black-Scholes-Merton (with q)")
 ax.set_xlabel("Days to expiry")
 ax.set_ylabel("MSE (index points²)")
-ax.set_yscale("log")
+#ax.set_yscale("log")
 ax.set_title("SPX calls, 2024-06-12: pricing error by expiry")
 ax.legend()
 ax.grid(True, alpha=0.3)
 plt.tight_layout()
+if SAVE_FIG:
+    fig.savefig("figures/mse_by_expiry.png", dpi=300, bbox_inches="tight")
 plt.show()
 
-#%% Realised vol vs ATM implied vol on the options date
-date = "2024-06-12"
-N = 60
-target_days = round(N * 365 / 252)          # ~87 calendar days, matching the RV window
-
-rv = realised_vol(date, spot["log_return"], N=N, annual=252)
-
-opts = df.dropna(subset=["impl_volatility"]).copy()
-opts["moneyness"] = (opts["strike_price"] / 1000) / opts["S"]
-
-# expiry closest to the target horizon, then strikes within 2% of spot (calls and puts)
-expiry = opts.loc[(opts["days"] - target_days).abs().idxmin(), "days"]
-atm = opts[(opts["days"] == expiry) & opts["moneyness"].between(0.98, 1.02)]
-iv_atm = atm["impl_volatility"].mean()
-
-print(f"Realised vol ({N}d before {date}): {rv:.2%}")
-print(f"ATM implied vol ({expiry}d expiry, {len(atm)} options): {iv_atm:.2%}")
-print(f"Plain mean of all IVs, for comparison: {opts['impl_volatility'].mean():.2%}")
-# %%
