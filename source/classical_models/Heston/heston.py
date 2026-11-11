@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 from scipy.integrate import quad
 from scipy.stats import norm
 
@@ -342,3 +343,59 @@ def prepare_wrds_chain(raw_df, min_days=7):
     df = df[df['impl_volatility'].notna()]
 
     return df[['K', 'T', 'mid', 'cp_flag', 'forward', 'impl_volatility', 'days']].reset_index(drop=True)
+
+def calibrate_heston_day(chain, moneyness=(0.8, 1.2), max_days=365, n_starts=1):
+    """Calibrate Heston to one day's chain as loaded by data_importing.data_import
+    (multi_option_single_day, or one date's rows of multi_option_multi_day).
+
+    Uses that day's spot S, one risk-free rate (median r over the chain) and q
+    (0 if the chain has none), the same inputs the Black–Scholes scripts use.
+    Only options with strike within `moneyness` of spot and at most `max_days`
+    to expiry are fitted (keeps the fit fast and focused on the liquid part).
+    Returns (params, S0, r, q): params can go straight into heston_price_fft(**params).
+    """
+    S0 = float(chain["S"].iloc[0])
+    r = float(chain["r"].median())
+    q = float(np.nan_to_num(chain["q"].iloc[0])) if "q" in chain else 0.0
+
+    df = prepare_wrds_chain(chain)
+    num = ["K", "T", "mid", "forward", "impl_volatility"]
+    df[num] = df[num].astype(float)   # WRDS gives nullable 'Float64' columns, whose missing <NA> breaks `if` checks
+    df = df[df["K"].between(moneyness[0] * S0, moneyness[1] * S0) & (df["days"] <= max_days)].copy()
+    df["forward"] = S0 * np.exp((r - q) * df["T"])   # so calibrate_heston backs out exactly S0
+    params, _ = calibrate_heston(df.reset_index(drop=True), r=r, q=q, n_starts=n_starts)
+    return params, S0, r, q
+
+
+def calibrate_heston_by_date(chains):
+    """calibrate_heston_day for every date in a stacked multi-day chain (multi_option_multi_day).
+    Returns {date: params}. Days where the fit fails are skipped with a warning."""
+    params = {}
+    groups = chains.groupby("date")
+    for i, (d, day_chain) in enumerate(groups, 1):
+        try:
+            params[d] = calibrate_heston_day(day_chain)[0]
+        except Exception as e:
+            print(f"\nWarning: Heston calibration failed on {d.date()} ({e})")
+        print(f"Heston: calibrated {i}/{len(groups)} days", end="\r")
+    print()
+    return params
+
+
+def heston_price_chain(df, params_by_date):
+    """Heston price for every option in df (columns date, S, strike, T, r, cp_flag, and q if
+    there is one), using params_by_date[date]. One FFT per (date, expiry), so whole chains are fast.
+    Returns an array aligned with df (NaN for dates with no parameters)."""
+    out = pd.Series(np.nan, index=df.index)
+    q_all = df["q"].astype(float).fillna(0.0) if "q" in df else pd.Series(0.0, index=df.index)
+    for (d, T), g in df.groupby(["date", "T"]):
+        params = params_by_date.get(d)
+        if params is None:
+            continue
+        S, r, q = float(g["S"].iloc[0]), float(g["r"].iloc[0]), float(q_all[g.index[0]])
+        strikes, calls = heston_fft_call_grid(S, T, r, q=q, **params)
+        K = g["strike"].to_numpy(float)
+        call = np.interp(K, strikes, calls)
+        put = call - S * np.exp(-q * T) + K * np.exp(-r * T)     # put-call parity
+        out[g.index] = np.where(g["cp_flag"].to_numpy() == "P", put, call)
+    return out.to_numpy()

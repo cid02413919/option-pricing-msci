@@ -130,3 +130,27 @@ def forecast_realized_vol_garch(log_returns, horizon_days, model="gjr-garch",
     """Log returns in -> (forecast vol, fitted params) out."""
     params = fit_garch(log_returns, model=model, dist=dist)
     return garch_forecast_vol(params, horizon_days, annualization), params
+
+
+def garch_vol_series(dates, days, log_returns, window=252, model="gjr-garch", annualization=252, min_obs=100):
+    """GARCH vol for each option, given its pricing date and calendar days to expiry.
+
+    log_returns : pd.Series of daily log returns indexed by date.
+    GARCH is re-fit once per date on the `window` returns BEFORE that date (no look-ahead),
+    then forecast over each option's remaining life (calendar days -> trading days).
+    Returns an array aligned with `dates` (NaN where there are fewer than `min_obs` past returns).
+    """
+    log_returns = log_returns.dropna()
+    dates = np.asarray(pd.to_datetime(dates))
+    days = np.asarray(days)
+    out = np.full(len(dates), np.nan)
+    for d in np.unique(dates):
+        past = log_returns[log_returns.index < d].to_numpy()[-window:]
+        if len(past) < min_obs:
+            continue
+        params = fit_garch(past, model=model)
+        rows = dates == d
+        for h in np.unique(days[rows]):
+            horizon = max(1, round(h * annualization / 365))
+            out[rows & (days == h)] = garch_forecast_vol(params, horizon, annualization)
+    return out
