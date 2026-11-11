@@ -28,3 +28,21 @@ We made the data importing methods so they could be imported when needed. We plo
 <img src="figures/realised_vol_wrt_time.png" width="600">
 
 There can not be much difference between the 2 versions of historical vol, however it can be seen that it is sometimes off from the true market price.
+
+## 02/11/26
+**Aims:**
+- To implement VIX volatility using black scholes model and compare to realised vol
+
+<img src="figures/beta_VIX.png" width="600">
+
+**Results:**
+
+<img src="figures/VIX_implied_realised_vol_bs.png" width="600">
+
+## 02/11/26
+**Aims:**
+- To be able to plot per sector
+
+We dont have european options of sectors grouped, so we will use american ones instead. Apparently the european ones are too illiquid to be reliable anyways.
+
+<img src="figures/Screenshot 2026-11-02 162020.png" width="600">

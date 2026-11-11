@@ -1,11 +1,18 @@
 #%%
+import sys
 import pandas as pd
 from pricing import black_scholes_call, realised_vol
 import numpy as np
 import matplotlib.pyplot as plt
 
-df = pd.read_csv("../../data/spx_options_2024-06-12.csv", usecols=["cp_flag", "strike_price", "impl_volatility", "mid", "T", "S", "r", "q", "days"])
-spot = pd.read_csv("../../data/spx_spot_2023-10-01_2024-12-31.csv", index_col="date", parse_dates=True)
+sys.path.append("source")  # tells python to look in source (run from repo root)
+sys.path.append("../..")   # same, when run from this folder (interactive cells)
+from data_importing.data_import import multi_option_single_day, return_multi_day
+
+username = "kairogers"
+
+df = multi_option_single_day(username, "2024-06-12", secid=213612,  save=False)
+spot = return_multi_day(username, "2023-10-01", "2024-12-31", lookback=0, save=False)
 
 #%% Calculating overall MSE for black scholes including and not including dividend
 residuals = []

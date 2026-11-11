@@ -136,7 +136,7 @@ opt["bs_price_VIX"]            = price_fn(opt["S"], K, opt["vix_dec"],        op
 fig, ax = plt.subplots(figsize=(9, 5))
 
 ax.plot(opt["days"], opt["mid"], "o", ms=4, color="blue", alpha=0.8, label="Market mid")
-#ax.plot(opt["days"], opt["bs_price_implied"], "-", lw=2, color="green", label="Black–Scholes implied vol")
+ax.plot(opt["days"], opt["bs_price_implied"], "-", lw=2, color="pink", label="Black–Scholes implied vol")
 ax.plot(opt["days"], opt["bs_price_historical_zm"], "-", lw=2, color="orange", label="Black–Scholes zero-meaned historical vol")
 ax.plot(opt["days"], opt["bs_price_historical_dm"], "-", lw=2, color="red", label="Black–Scholes demeaned historical vol")
 ax.plot(opt["days"], opt["bs_price_garch"], "-", lw=2, color="purple", label=f"Black–Scholes GARCH ({GARCH_MODEL})")

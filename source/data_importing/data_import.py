@@ -242,6 +242,50 @@ def get_vix(username, start, end, save=True):
     return vix
 
 
+def exercise_style(username, optionid, year=None):
+    """Return 'E' (European) or 'A' (American) for an OptionMetrics option.
+ 
+    username : WRDS username
+    optionid : OptionMetrics option id
+    year     : a year the option traded in (e.g. 2023). Optional, but much faster:
+               opprcd is split into one table per year, so without it every year
+               is searched, newest first, until the option is found.
+ 
+    Exercise style is stored per underlying security (optionm.opinfd), so this
+    finds the option's secid in opprcd, then looks that secid up in opinfd.
+    """
+    db = wrds.Connection(wrds_username=username)
+ 
+    if year is not None:
+        years = [int(year)]
+    else:
+        # only the opprcd years that actually exist on WRDS, newest first
+        tables = db.list_tables(library="optionm")
+        years = sorted((int(t[6:]) for t in tables
+                        if t.startswith("opprcd") and t[6:].isdigit()), reverse=True)
+ 
+    style = None
+    for y in years:
+        res = db.raw_sql(f"""
+            SELECT i.exercise_style
+            FROM optionm.opprcd{y} AS p
+            JOIN optionm.opinfd AS i ON i.secid = p.secid
+            WHERE p.optionid = {optionid}
+            LIMIT 1
+        """)
+        if not res.empty:
+            style = res["exercise_style"].iloc[0]
+            break
+ 
+    db.close()
+ 
+    if style is None:
+        where = f"in {year}" if year is not None else "in any year"
+        raise ValueError(f"Option {optionid} not found {where}")
+ 
+    return style
+
+
 if __name__ == "__main__":
     username = "kairogers"
     vix = get_vix(username, "2023-06-12", "2023-12-15", save=False)
