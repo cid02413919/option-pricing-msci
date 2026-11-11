@@ -46,7 +46,7 @@ A potential cause of the implied volatility not matching is due to not taking in
 
 The Merton model decreased the MSE significantly, especially for longer expiry options, however a slight mismatch remains.
 
-<img src="figures/mse_by_expiry.png" width="600">
+<img src="figures/mse_by_expiry.png" width="1000">
 
 ---
 
@@ -57,7 +57,7 @@ The Merton model decreased the MSE significantly, especially for longer expiry o
 
 **Work:**
 
-<img src="figures/real_vol_zeromean.png" width="600">
+<img src="figures/real_vol_zeromean.png" width="1000">
 
 The top one shows the zero-mean version of the realised volatility which is used more commonly. The bottom one shows the textbook definition of the realised volatility. The zero-mean is used in practice usually, we looked into the reason, it's something to do with the P&L not being accurate when you use the textbook version, but we didn't really understand it. We will implement both to compare accuracy.
 
@@ -65,7 +65,7 @@ We made the data importing methods so they could be imported when needed. We plo
 
 **Results:**
 
-<img src="figures/realised_vol_wrt_time.png" width="600">
+<img src="figures/realised_vol_wrt_time.png" width="1000">
 
 There is not much difference between the 2 versions of historical vol, however it can be seen that it is sometimes off from the true market price. Since they are almost identical, we can abandon the demeaned historical vol, and use just the zero-mean historical vol, which has a slightly lower RMSE:
 
@@ -85,11 +85,11 @@ There is not much difference between the 2 versions of historical vol, however i
 
 **Work:**
 
-<img src="figures/beta_VIX.png" width="600">
+<img src="figures/beta_VIX.png" width="1000">
 
 **Results:**
 
-<img src="figures/VIX_implied_realised_vol_bs.png" width="600">
+<img src="figures/VIX_implied_realised_vol_bs.png" width="1000">
 
 ---
 
@@ -102,7 +102,7 @@ There is not much difference between the 2 versions of historical vol, however i
 
 We don't have European options of sectors grouped, so we will use American ones instead. Apparently the European ones are too illiquid to be reliable anyways.
 
-<img src="figures/Screenshot 2026-11-02 162020.png" width="600">
+<img src="figures/Screenshot 2026-11-02 162020.png" width="1000">
 
 There is no index options data available for certain sectors after 2019, therefore we have to use the ETFs instead. We will have to state the approximation of American options as European options.
 
@@ -129,15 +129,15 @@ We will use the continuous dividend, as it is easier to calculate. We may also w
 1. Models should be trained and evaluated on the same loss function (or quantified error), otherwise it will result in a suboptimal model.
 2. When comparing models we should use the same loss function to compare throughout.
 
-<img src="figures/error_types.png" width="600">
+<img src="figures/error_types.png" width="1000">
 
 Christoffersen & Jacobs found that parameters chosen to minimise squared dollar errors also perform reasonably well when judged by other error measures. We will use the RMSE as it shares the benefits of the MSE but is easier to interpret.
 
 **Results:**
 
-<img src="figures/vol_methods_3_loss_funcs.png" width="600">
+<img src="figures/vol_methods_3_loss_funcs.png" width="1000">
 
-<img src="figures/vol_method_3_loss_function_moneyness.png" width="600">
+<img src="figures/vol_method_3_loss_function_moneyness.png" width="1000">
 
 ---
 
@@ -151,7 +151,7 @@ Christoffersen & Jacobs found that parameters chosen to minimise squared dollar 
 
 Dimitri in our 3rd meeting suggested investigating what the different error quantifying methods measure. We first measure the errors wrt the option price:
 
-<img src="figures/errors_wrt_optionp.png" width="600">
+<img src="figures/errors_wrt_optionp.png" width="1000">
 
 The RMSE starts lower, and increases with the options price, whereas the MAPE does the opposite. This is as expected as for the same absolute error, the percentage error will be greater for smaller option prices than greater option prices.
 
@@ -165,11 +165,11 @@ I changed the code from taking options from the first day of every month, to tak
 
 I noticed that the RMSE was much greater for the SPX than the sector ETFs:
 
-<img src="figures/rmse_by_sector.png" width="600">
+<img src="figures/rmse_by_sector.png" width="1000">
 
 This is mainly due to the SPX being a lot more expensive than the ETFs. Which is proven by the MPE (mean percentage error):
 
-<img src="figures/mpe_wrt_sector.png" width="600">
+<img src="figures/mpe_wrt_sector.png" width="1000">
 
 The errors can be seen to be a lot closer, however the SPX error is still greater, suggesting that the SPX being more expensive doesn't fully account for the difference in error.
 
@@ -179,6 +179,6 @@ The errors can be seen to be a lot closer, however the SPX error is still greate
 
 **Sector ETFs & Stocks:** dividends come in four lumps a year, on the Monday after the third Friday of Mar/Jun/Sep/Dec, just after the quarterly option expiry. The options are American so the Black-Scholes formula should not work, however if we choose a period of time in which there are no dividend payments, for a call option, then the Black-Scholes formula can be used.
 
-<img src="figures/bs_american.png" width="600">
+<img src="figures/bs_american.png" width="1000">
 
 Figure shows the implied volatility being plugged into the Black-Scholes model working near perfectly, despite the option being American. This is due to choosing a call option during a time when there are no dividend payments.
