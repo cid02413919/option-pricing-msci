@@ -10,7 +10,7 @@ from classical_models.comparing_models.compare_funcs import LABELS, chosen, load
 # WRDS username, security and period
 username = "kairogers"
 secid = 108105   # SPX (VIX is SPX vol, so SPX is the fair test for the VIX method)
-start, end = "2019-01-01", "2023-12-31"
+start, end = "2023-01-01", "2023-12-31"
 
 # ---- Settings: switch these on/off ----
 SHOW_ALL_ERRORS = False   # True also does median absolute error and MAPE (RMSE is always done)
@@ -20,7 +20,7 @@ SAVE_FIG = False          # True saves the figure(s) to figures/
 # (switching off GARCH or Heston also skips their slow fitting)
 METHODS = {
     "hist_vol_zm": True,   # Black–Scholes, zero-mean 60-day historical vol
-    "hist_vol_dm": True,   # Black–Scholes, demeaned 60-day historical vol
+    "hist_vol_dm": False,   # Black–Scholes, demeaned 60-day historical vol
     "garch_vol":   True,   # Black–Scholes, GJR-GARCH vol forecast over the option's life
     "vix_dec":     True,   # Black–Scholes, VIX
     "heston":      True,   # Heston, calibrated to the previous trading day's option chain
