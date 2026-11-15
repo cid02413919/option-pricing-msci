@@ -182,3 +182,18 @@ The errors can be seen to be a lot closer, however the SPX error is still greate
 <img src="figures/bs_american.png" width="1000">
 
 Figure shows the implied volatility being plugged into the Black-Scholes model working near perfectly, despite the option being American. This is due to choosing a call option during a time when there are no dividend payments.
+
+## 15/11/2026 – Working on Heston Model
+
+**Aims:**
+- To understand what the Heston model code is doing better
+
+**Work:**
+- Got claude to simplify the code slightly
+
+My understanding of the Quad method:
+
+What the code is doing, is fourier transform with a negative sign in the exponent (the usual convention is to call this a forward fourier transform), on the characteristic function, to give the probability distribution function, which can be used to give a price.
+
+The charateristic function is the FT of the pdf (or IFT depending on how you define it, it has a positive exponent). Starting from the Heston PDE, if you sub in a ansatz (inspired from the black-scholes model solution), which is a function of 2 pdfs, and sub it into the heston PDE, you get 2 PDEs for the 2 pdfs. There is a theorem (Feynman–Kac theorem) that states that the characteristic function should also obay the same PDEs. Therefore you can sub in the characteristic functions into the PDEs. Then by guessing the form of the solution, you can reduce the PDEs into ODEs, and solve for the characteristic functions. Then you need to Inverse FT the 2 characteristic functions to get the option price (or forward ft depending on ur definition, its negative exponent).
+

@@ -289,7 +289,7 @@ def calibrate_rough_heston(df, r, H, q=0.0, x0=None, n_starts=1, verbose=False):
         feller_violation = min(2*kappa*theta - sigma_v**2, 0.0)
         return np.append(res, 5.0*feller_violation)
 
-    starts = [x0] if x0 else [init_guess_from_market(df, S0)]
+    starts = [x0] if x0 else [init_guess_from_market(df)]
     if n_starts > 1:
         rng = np.random.default_rng(0)
         for _ in range(n_starts - 1):
