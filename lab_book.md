@@ -206,6 +206,7 @@ The charateristic function is the FT of the pdf (or IFT depending on how you def
 - To quantify the errors of the Heston model so that it can be compared to the BS model
 - To produce figures of the Heston model error wrt time, maturity, moneyness, option price, and sector
 - To implement code which allows us to price individual stocks
+- To research ML models
 
 **Work:**
 
@@ -252,3 +253,16 @@ The Heston model can be seen outperforming the 3 Black-Scholes approaches for al
 <img src="figures/option_price_wrt_t_107525_162433831.png" width="1000">
 
 The Heston model prediction vs the market prices for Microsoft stocks. I did plot the VIX vol Black-Scholes prediction here, as it is more complicated to implement the VIX for non S&P 500 indices.
+
+---
+
+**ML Models**
+
+Families: 
+- Neural networks
+- Tree ensembles (random forest, XGBoost, LightGBM, CatBoost)
+- Kernel methods (Gaussian process, SVR)
+- Linear models
+
+They can be trained to predict the price or the Black–Scholes correction. The benifit of the latter is that the value being predicted is smaller, therefore the RMSE will be less.
+Loss penalties (networks, linear models) encourage the bounds but don't guarantee them. Boosters can enforce monotonicity in strike, not convexity. Clipping enforces $\max(S-Ke^{-r\tau},0) \le C \le S$.
