@@ -340,6 +340,23 @@ def trailing_dividend_yield(username, secid, start, end, save=True):
     return spot
 
 
+def ex_dividend_dates(username, secid, start, end):
+    """Return the ex-dates of regular cash dividends (distr_type 1) between start and end
+    as a sorted DatetimeIndex (empty if there are none, e.g. for an index like SPX)."""
+    db = wrds.Connection(wrds_username=username)
+    dist = db.raw_sql(f"""
+        SELECT DISTINCT ex_date
+        FROM optionm.distrd
+        WHERE secid = {secid}
+          AND distr_type = '1'
+          AND cancel_flag = '0'
+          AND ex_date BETWEEN '{start}' AND '{end}'
+        ORDER BY ex_date
+    """, date_cols=["ex_date"])
+    db.close()
+    return pd.DatetimeIndex(dist["ex_date"])
+
+
 def return_multi_day(username, start, end, lookback=60, secid=108105, save=True):
     """Return daily close, simple return and log return from `start` to `end`,
     plus `lookback` extra trading days before `start` (flagged in the 'lookback' column).

@@ -197,3 +197,58 @@ What the code is doing, is fourier transform with a negative sign in the exponen
 
 The charateristic function is the FT of the pdf (or IFT depending on how you define it, it has a positive exponent). Starting from the Heston PDE, if you sub in a ansatz (inspired from the black-scholes model solution), which is a function of 2 pdfs, and sub it into the heston PDE, you get 2 PDEs for the 2 pdfs. There is a theorem (Feynman–Kac theorem) that states that the characteristic function should also obay the same PDEs. Therefore you can sub in the characteristic functions into the PDEs. Then by guessing the form of the solution, you can reduce the PDEs into ODEs, and solve for the characteristic functions. Then you need to Inverse FT the 2 characteristic functions to get the option price (or forward ft depending on ur definition, its negative exponent).
 
+---
+
+## 16/10/2026 – Comparing the Heston model to the Black-Scholes model
+
+**Aims:**
+
+- To quantify the errors of the Heston model so that it can be compared to the BS model
+- To produce figures of the Heston model error wrt time, maturity, moneyness, option price, and sector
+- To implement code which allows us to price individual stocks
+
+**Work:**
+
+I found out that 2025-08-29 is the last day that wrds has options data
+
+**Results:**
+
+<img src="figures/option_price_wrt_t_108105_162618361.png" width="1000">
+
+The Heston model can be seen outperforming the VIX Black-Scholes model. Over the whole lifetime of the S&P 500 index option.
+
+
+<img src="figures/heston_compared_wrt_maturity.png" width="1000">
+
+The Heston model can be seen outperforming the 3 Black-Scholes approaches for all maturities.
+
+
+<img src="figures/heston_compared_wrt_moneyness.png" width="1000">
+
+The Heston model can be seen outperforming the 3 Black-Scholes approaches for all moneyness values.
+
+
+<img src="figures/heston_compared_wrt_optionp.png" width="1000">
+
+The Heston model can be seen outperforming the 3 Black-Scholes approaches for all option price values.
+
+
+<img src="figures/heston_compared_wrt_sector.png" width="1000">
+
+The Heston model can be seen outperforming the 3 Black-Scholes approaches for all sectors. The results in this figure, suggest that VIX is the least accurate of the 3 volatility methods for many of the sectors. This dissagrees with the previous results in which the VIX was the best out of the vol methods, except for energy, and consumer staples. This change in results could be due to the change in the dates measured, or potentially due to now only options that dont overlap with the dividend exdate are considered.
+
+
+
+**Overall pricing error, SPX, 2023 (weekly, Wednesdays)**
+
+| Method | RMSE ($) |
+|---|---:|
+| Heston (calibrated on previous day) | 16.07 |
+| Black–Scholes, VIX | 26.78 |
+| Black–Scholes, zero-mean historical vol | 33.96 |
+| Black–Scholes, GJR-GARCH vol | 34.28 |
+
+
+<img src="figures/option_price_wrt_t_107525_162433831.png" width="1000">
+
+The Heston model prediction vs the market prices for Microsoft stocks. I did plot the VIX vol Black-Scholes prediction here, as it is more complicated to implement the VIX for non S&P 500 indices.

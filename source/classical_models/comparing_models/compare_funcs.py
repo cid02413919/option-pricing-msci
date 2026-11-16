@@ -1,8 +1,23 @@
 """Shared code for the scripts that compare pricing methods against the market:
 Black–Scholes with different volatilities, and Heston.
 
-Each script has a METHODS dict of True/False switches at the top; pass chosen(METHODS)
-to the functions here so only the switched-on methods are calculated and plotted.
+How the comparison scripts use this file:
+  1. Each script has a METHODS dict of True/False switches; chosen(METHODS) gives the methods switched on.
+  2. load_weekly_prices(...)  downloads the weekly option chains and prices every option with every method.
+     How dividends are handled depends on the exercise style (see exercise_style):
+       european : the dividend yield q is used and every option is kept
+       american : q = 0, and only options with no ex-dividend date during their life are kept
+                  (the models are European, so they are only right for American options when
+                   there is no dividend, since then early exercise of a call is never worth it)
+  3. add_errors / error_tables / overall_errors  measure each method's error against the market mid.
+  4. plot_errors(...)  plots the error against some bucket (maturity, moneyness, ...).
+
+Sections:
+  1. Settings shared by every script (securities, labels, colours)
+  2. Small helpers
+  3. Pricing every option with every method
+  4. Errors against the market
+  5. Plotting
 """
 import os
 import numpy as np
@@ -11,7 +26,30 @@ import matplotlib.pyplot as plt
 
 from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put, historical_volatility_series, garch_vol_series
 from classical_models.Heston.heston import calibrate_heston_by_date, heston_price_chain
-from data_importing.data_import import multi_option_multi_day, return_multi_day, get_vix, wednesdays
+from data_importing.data_import import multi_option_multi_day, return_multi_day, get_vix, wednesdays, ex_dividend_dates
+
+
+# =============================================================================
+# 1. Settings shared by every script
+# =============================================================================
+
+# secid -> (ticker, name, exercise style of its options).
+# The XL... are sector ETFs (American options), SPX is an index (European options)
+SECURITIES = {
+    108105: ("SPX", "S&P 500 Index", "european"),
+    110007: ("XLB", "Materials", "american"),
+    213084: ("XLC", "Communication Services", "american"),
+    110011: ("XLE", "Energy", "american"),
+    110012: ("XLF", "Financials", "american"),
+    110013: ("XLI", "Industrials", "american"),
+    110014: ("XLK", "Technology", "american"),
+    110009: ("XLP", "Consumer Staples", "american"),
+    208181: ("XLRE", "Real Estate", "american"),
+    110015: ("XLU", "Utilities", "american"),
+    110008: ("XLV", "Health Care", "american"),
+    110010: ("XLY", "Consumer Discretionary", "american"),
+}
+SPX = 108105   # the VIX is S&P 500 vol, so it is only a fair test of the VIX method on SPX
 
 # legend label and plot colour for every method
 LABELS = {
@@ -25,10 +63,44 @@ LABELS = {
 COLOURS = {"implied": "pink", "hist_vol_zm": "orange", "hist_vol_dm": "red",
            "garch_vol": "purple", "vix_dec": "green", "heston": "brown"}
 
+BLACK_SCHOLES_METHODS = ["implied", "hist_vol_zm", "hist_vol_dm", "garch_vol", "vix_dec"]
+
+
+# =============================================================================
+# 2. Small helpers
+# =============================================================================
 
 def chosen(methods):
     """The methods switched on (True) in a script's METHODS dict."""
     return [m for m, on in methods.items() if on]
+
+
+def ask_secid():
+    """Print the securities in SECURITIES and ask for a secid (any other OptionMetrics secid works too)."""
+    print("\n  secid   ticker  exercise  name")
+    for secid, (ticker, name, exercise) in SECURITIES.items():
+        print(f"  {secid:<7d} {ticker:<7s} {exercise:<9s} {name}")
+    while True:
+        choice = input("SECID: ").strip()
+        if choice.isdigit():
+            return int(choice)
+        print("Enter a number, e.g. 108105 for SPX")
+
+
+def exercise_style(secid):
+    """'american' or 'european' for a secid: from SECURITIES, or asked for if it is not in there."""
+    if secid in SECURITIES:
+        return SECURITIES[secid][2]
+    while True:
+        choice = input(f"Are secid {secid}'s options American or European? (a/e): ").strip().lower()
+        if choice in ("a", "e"):
+            return "american" if choice == "a" else "european"
+        print("Enter a or e")
+
+
+def ticker(secid):
+    """Ticker for a secid, or 'secid ...' if it is not in SECURITIES."""
+    return SECURITIES[secid][0] if secid in SECURITIES else f"secid {secid}"
 
 
 def cached(cache_file, download):
@@ -40,65 +112,155 @@ def cached(cache_file, download):
     return data
 
 
-def load_weekly_prices(username, secid, start, end, methods):
+# =============================================================================
+# 3. Pricing every option with every method
+# =============================================================================
+#
+# Every method only uses information from before the pricing day:
+#   historical vols : rolling 60-day vol, shifted one day
+#   GARCH           : re-fit on the 252 returns before the day, forecast over the option's life
+#   VIX             : get_vix already gives the previous day's value
+#   Heston          : calibrated to the previous trading day's whole option chain
+#   implied         : the same day's implied vol (so it is not a forecast; it sits on the market price)
+
+def load_weekly_prices(username, secid, start, end, methods, exercise="european"):
     """Option chains on every Wednesday (Tuesday if Wednesday is a holiday) from start to end,
     with a model price column 'price_{method}' for each method in `methods`.
 
-    Every method only uses information from before the pricing day:
-      historical vols : rolling 60-day vol, shifted one day
-      GARCH           : re-fit on the 252 returns before the day, forecast over the option's life
-      VIX             : get_vix already gives the previous day's value
-      Heston          : calibrated to the previous trading day's whole option chain
+    exercise : 'european' -> use the dividend yield q, keep every option
+               'american' -> q = 0, and only keep options with no ex-dividend date during their
+                             life, both for pricing and for the Heston calibration
+
     Only options that every method could price are kept, so all methods are compared on the same options.
     Downloads (and the Heston calibrations) are saved in source/data; delete the files to redo them.
     """
-    # returns, with a year before start: GARCH's fitting window, and the day before the first Wednesday for Heston
-    rtn = return_multi_day(username, start, end, lookback=252, secid=secid, save=False)
-    log_returns = rtn["log_return"]
-    prev_day = dict(zip(rtn.index[1:], rtn.index[:-1]))       # trading day -> trading day before it
-    rtn["hist_vol_zm"] = historical_volatility_series(log_returns, window=60, method="zero_mean").shift(1)
-    rtn["hist_vol_dm"] = historical_volatility_series(log_returns, window=60, method="demeaned").shift(1)
-    rtn = rtn[rtn["lookback"] == False]
+    if exercise not in ("european", "american"):
+        raise ValueError(f"exercise must be 'european' or 'american', not {exercise!r}")
+    american = exercise == "american"
 
-    # option chains on the pricing dates (every trading day would be ~19M quotes / ~7 GB for SPX)
-    dates = wednesdays(rtn.index, start, end)
-    df = cached(f"source/data/cache_weekly_chains_{secid}_{start}_{end}.pkl",
-                lambda: multi_option_multi_day(username, dates, secid=secid, save=False, calc_q=True))
-    df = df[df["T"] > 0].copy()                     # remove options that expire on the day itself
+    # Step 1: daily returns (with a year before start for GARCH) and the past-only historical vols
+    rtn = _load_returns(username, secid, start, end)
 
-    # each Black–Scholes method's vol for every option
-    for m in ("hist_vol_zm", "hist_vol_dm"):
-        if m in methods:
-            df[m] = df["date"].map(rtn[m])
-    if "vix_dec" in methods:
-        df["vix_dec"] = df["date"].map(get_vix(username, start, end, save=False)["vix_dec"])
-    if "garch_vol" in methods:
-        df["garch_vol"] = garch_vol_series(df["date"], df["days"], log_returns)
-    if "implied" in methods:
-        df["implied"] = df["impl_volatility"]
+    # Step 2: the option chains on the pricing dates (American: q = 0 and dividend-free options only)
+    ex_dates = load_ex_dividend_dates(username, secid, start, end) if american else None
+    df = _load_weekly_chains(username, secid, start, end, rtn.index, use_dividends=not american)
+    if american:
+        df = drop_options_over_dividends(df, ex_dates)
 
-    is_call = df["cp_flag"] == "C"
-    for m in methods:
-        if m != "heston":
-            call_price = black_scholes_call(df["S"], df["strike"], df[m], df["r"], df["T"], df["q"])
-            put_price = black_scholes_put(df["S"], df["strike"], df[m], df["r"], df["T"], df["q"])
-            df[f"price_{m}"] = np.where(is_call, call_price, put_price)
+    # Step 3: each Black–Scholes method's vol, then its price
+    df = _add_black_scholes_vols(df, rtn, username, start, end, methods)
+    df = _add_black_scholes_prices(df, methods)
 
-    # Heston: calibrate to the trading day before each pricing date, then price the whole chain
+    # Step 4: Heston, calibrated to the previous trading day
     if "heston" in methods:
-        prev_dates = sorted({prev_day[d] for d in df["date"].unique()})
-        params = cached(f"source/data/cache_heston_params_{secid}_{start}_{end}.pkl",
-                        lambda: calibrate_heston_by_date(
-                            multi_option_multi_day(username, prev_dates, secid=secid, save=False, calc_q=True)))
-        params_by_date = {d: params[prev_day[d]] for d in df["date"].unique() if prev_day[d] in params}
-        df["price_heston"] = heston_price_chain(df, params_by_date)
+        df["price_heston"] = _heston_prices(df, rtn, username, secid, start, end, ex_dates)
 
+    # Step 5: keep only options every method could price
     n = len(df)
     df = df.dropna(subset=[f"price_{m}" for m in methods])
     if len(df) < n:
         print(f"{n - len(df)} of {n} options dropped (a method had no price for them)")
     return df
 
+
+def _load_returns(username, secid, start, end):
+    """Daily log returns from a year before start to end, with the 60-day historical vols
+    (shifted one day, so each day only uses earlier returns). Lookback rows are kept: GARCH
+    fits on them and Heston needs the trading day before the first pricing date."""
+    rtn = return_multi_day(username, start, end, lookback=252, secid=secid, save=False)
+    rtn["hist_vol_zm"] = historical_volatility_series(rtn["log_return"], window=60, method="zero_mean").shift(1)
+    rtn["hist_vol_dm"] = historical_volatility_series(rtn["log_return"], window=60, method="demeaned").shift(1)
+    return rtn
+
+
+def _load_weekly_chains(username, secid, start, end, trading_days, use_dividends):
+    """Every option quoted on each Wednesday between start and end.
+    (Every trading day would be ~19M quotes / ~7 GB for SPX, hence weekly.)"""
+    dates = wednesdays(trading_days, start, end)
+    df = cached(f"source/data/cache_weekly_chains_{secid}_{start}_{end}.pkl",
+                lambda: multi_option_multi_day(username, dates, secid=secid, save=False, calc_q=True))
+    df = df[df["T"] > 0].copy()          # remove options that expire on the day itself
+    if not use_dividends:
+        df["q"] = 0.0
+    return df
+
+
+def load_ex_dividend_dates(username, secid, start, end):
+    """Ex-dividend dates from start until 3 years after end (options can live that long)."""
+    until = (pd.Timestamp(end) + pd.DateOffset(years=3)).strftime("%Y-%m-%d")
+    ex_dates = cached(f"source/data/cache_ex_div_dates_{secid}_{start}_{end}.pkl",
+                      lambda: ex_dividend_dates(username, secid, start, until))
+    if len(ex_dates) == 0:
+        print(f"Warning: no ex-dividend dates found for secid {secid}, so no options are dropped")
+    return ex_dates
+
+
+def drop_options_over_dividends(df, ex_dates):
+    """Keep only options with no ex-dividend date in (date, exdate], i.e. no dividend is paid
+    between the pricing day and expiry, so the dividend-free models (q = 0) are correct for them.
+    (An ex-date on the pricing day itself is fine: the price is already ex-dividend.)
+    df needs 'date' and 'exdate' columns."""
+    ex = np.asarray(ex_dates, dtype="datetime64[ns]")
+    # number of ex-dates <= date vs <= exdate: equal means none fall in between
+    before_start = np.searchsorted(ex, df["date"].to_numpy("datetime64[ns]"), side="right")
+    before_end = np.searchsorted(ex, df["exdate"].to_numpy("datetime64[ns]"), side="right")
+    keep = before_start == before_end
+    print(f"Dividend-free filter: kept {keep.sum()} of {len(df)} options")
+    return df[keep].copy()
+
+
+def _add_black_scholes_vols(df, rtn, username, start, end, methods):
+    """A volatility column for every Black–Scholes method in `methods`."""
+    if "implied" in methods:
+        df["implied"] = df["impl_volatility"]
+    for m in ("hist_vol_zm", "hist_vol_dm"):
+        if m in methods:
+            df[m] = df["date"].map(rtn[m])
+    if "vix_dec" in methods:
+        df["vix_dec"] = df["date"].map(get_vix(username, start, end, save=False)["vix_dec"])
+    if "garch_vol" in methods:
+        df["garch_vol"] = garch_vol_series(df["date"], df["days"], rtn["log_return"])
+    return df
+
+
+def _add_black_scholes_prices(df, methods):
+    """A 'price_{method}' column for every Black–Scholes method: the call or put price with that vol."""
+    is_call = df["cp_flag"] == "C"
+    for m in methods:
+        if m in BLACK_SCHOLES_METHODS:
+            call = black_scholes_call(df["S"], df["strike"], df[m], df["r"], df["T"], df["q"])
+            put = black_scholes_put(df["S"], df["strike"], df[m], df["r"], df["T"], df["q"])
+            df[f"price_{m}"] = np.where(is_call, call, put)
+    return df
+
+
+def _heston_prices(df, rtn, username, secid, start, end, ex_dates=None):
+    """Heston price for every option in df: calibrate to the whole option chain on the trading
+    day before each pricing date, then price that date's chain with those parameters.
+    ex_dates None  -> European: calibrate with the dividend yield q on every option
+    ex_dates given -> American: calibrate with q = 0 on the options with no dividend during their life"""
+    prev_day = dict(zip(rtn.index[1:], rtn.index[:-1]))       # trading day -> trading day before it
+    pricing_dates = df["date"].unique()
+    prev_dates = sorted({prev_day[d] for d in pricing_dates})
+
+    def calibrate():
+        chains = multi_option_multi_day(username, prev_dates, secid=secid, save=False, calc_q=True)
+        if ex_dates is not None:
+            chains["q"] = 0.0
+            chains = drop_options_over_dividends(chains, ex_dates)
+        return calibrate_heston_by_date(chains)
+
+    # the parameters depend on q and on which options are fitted, so the two styles are saved separately
+    suffix = "" if ex_dates is None else "_american"
+    params = cached(f"source/data/cache_heston_params_{secid}_{start}_{end}{suffix}.pkl", calibrate)
+
+    params_by_date = {d: params[prev_day[d]] for d in pricing_dates if prev_day[d] in params}
+    return heston_price_chain(df, params_by_date)
+
+
+# =============================================================================
+# 4. Errors against the market mid
+# =============================================================================
 
 def add_errors(df, methods, show_all=False):
     """Error columns vs the market mid for each method: squared (for RMSE), and if show_all,
@@ -138,6 +300,10 @@ def overall_errors(df, methods, show_all=False):
     return out
 
 
+# =============================================================================
+# 5. Plotting
+# =============================================================================
+
 def plot_errors(rmse, mdae, mape, methods, xlabel, title, save_as=None):
     """One figure of error vs bucket, one line per method: an RMSE panel, plus median absolute
     error and MAPE panels if they were calculated. save_as: file name in figures/, or None to not save."""
@@ -148,6 +314,7 @@ def plot_errors(rmse, mdae, mape, methods, xlabel, title, save_as=None):
     fig, axes = plt.subplots(1, len(panels), figsize=(19, 5) if len(panels) > 1 else (8, 5), squeeze=False)
     axes = axes[0]
 
+    # bucket labels like "30–60", and "730+" for an open-ended last bucket
     labels = [f"{b.left:g}+" if b.right == np.inf else f"{b.left:g}–{b.right:g}" for b in rmse.index]
     for ax, (values, ylabel) in zip(axes, panels):
         for m in methods:
