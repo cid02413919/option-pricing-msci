@@ -1,5 +1,5 @@
 """Shared code for the scripts that compare pricing methods against the market:
-Black–Scholes with different volatilities, and Heston.
+Black–Scholes with different volatilities, Heston, and a random forest.
 
 How the comparison scripts use this file:
   1. Each script has a METHODS dict of True/False switches; chosen(METHODS) gives the methods switched on.
@@ -26,6 +26,7 @@ import matplotlib.pyplot as plt
 
 from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put, historical_volatility_series, garch_vol_series
 from classical_models.Heston.heston import calibrate_heston_by_date, heston_price_chain
+from ML_models.random_forest import add_features, walk_forward
 from data_importing.data_import import multi_option_multi_day, return_multi_day, get_vix, wednesdays, ex_dividend_dates
 
 
@@ -59,11 +60,15 @@ LABELS = {
     "garch_vol":   "Black–Scholes GJR-GARCH vol",
     "vix_dec":     "Black–Scholes VIX",
     "heston":      "Heston (calibrated on previous day)",
+    "iv_lag":      "Black–Scholes last week's implied vol",
+    "rf":          "Random forest (walk-forward)",
 }
 COLOURS = {"implied": "pink", "hist_vol_zm": "orange", "hist_vol_dm": "red",
-           "garch_vol": "purple", "vix_dec": "green", "heston": "brown"}
+           "garch_vol": "purple", "vix_dec": "green", "heston": "brown",
+           "iv_lag": "grey", "rf": "blue"}
 
-BLACK_SCHOLES_METHODS = ["implied", "hist_vol_zm", "hist_vol_dm", "garch_vol", "vix_dec"]
+BLACK_SCHOLES_METHODS = ["implied", "hist_vol_zm", "hist_vol_dm", "garch_vol", "vix_dec", "iv_lag"]
+ML_FEATURE_METHODS = ["iv_lag", "rf"]   # need the random forest's features (lagged IV etc.)
 
 
 # =============================================================================
@@ -122,6 +127,9 @@ def cached(cache_file, download):
 #   VIX             : get_vix already gives the previous day's value
 #   Heston          : calibrated to the previous trading day's whole option chain
 #   implied         : the same day's implied vol (so it is not a forecast; it sits on the market price)
+#   iv_lag          : each option's implied vol on the previous pricing date (a week earlier)
+#   rf              : walk-forward: each month is priced by a forest trained only on earlier months,
+#                     so the first two months have no price and are dropped for every method
 
 def load_weekly_prices(username, secid, start, end, methods, exercise="european"):
     """Option chains on every Wednesday (Tuesday if Wednesday is a holiday) from start to end,
@@ -147,6 +155,9 @@ def load_weekly_prices(username, secid, start, end, methods, exercise="european"
     if american:
         df = drop_options_over_dividends(df, ex_dates)
 
+    if any(m in methods for m in ML_FEATURE_METHODS):
+        df = add_features(df)
+
     # Step 3: each Black–Scholes method's vol, then its price
     df = _add_black_scholes_vols(df, rtn, username, start, end, methods)
     df = _add_black_scholes_prices(df, methods)
@@ -154,6 +165,13 @@ def load_weekly_prices(username, secid, start, end, methods, exercise="european"
     # Step 4: Heston, calibrated to the previous trading day
     if "heston" in methods:
         df["price_heston"] = _heston_prices(df, rtn, username, secid, start, end, ex_dates)
+
+    # Step 4b: random forest, trained walk-forward on this same data
+    if "rf" in methods:
+        suffix = "_american" if american else ""
+        rf = cached(f"source/data/cache_rf_prices_{secid}_{start}_{end}{suffix}.pkl",
+                    lambda: pd.Series(walk_forward(df)[0], index=df.index))
+        df["price_rf"] = rf.reindex(df.index)
 
     # Step 5: keep only options every method could price
     n = len(df)
