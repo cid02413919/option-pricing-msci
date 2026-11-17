@@ -266,3 +266,86 @@ Families:
 
 They can be trained to predict the price or the Black–Scholes correction. The benifit of the latter is that the value being predicted is smaller, therefore the RMSE will be less.
 Loss penalties (networks, linear models) encourage the bounds but don't guarantee them. Boosters can enforce monotonicity in strike, not convexity. Clipping enforces $\max(S-Ke^{-r\tau},0) \le C \le S$.
+
+---
+
+## 17/10/2026 – Random Forests
+
+**Aims:**
+
+- To implement the random forest model
+
+**Work:**
+
+We calculated the errors and the feature importances for the S&P 500 model over 2023 wednesdays. Each month is used as the test data, and then the average error is taken over all the months.
+
+    `model = RandomForestRegressor(
+        n_estimators=100,      # number of trees in the forest
+        min_samples_leaf=5,    # each leaf must contain at least 5 options (stops overfitting)
+        n_jobs=-1,             # use all CPU cores
+        random_state=0,        # makes the results repeatable
+    )`
+
+**Results:**
+
+RMSE:9.24
+
+Feature importance (higher = more useful):
+  log_mF      0.971
+  moneyness   0.021
+  T           0.005
+  delta_lag   0.003
+  iv_lag      0.000
+  r           0.000
+  spot_ret    0.000
+  atm_iv_lag  0.000
+  q           0.000
+  is_new      0.000
+
+I tried removing log_mF and got the following:
+
+  RMSE:                10.67
+
+Feature importance (higher = more useful):
+  moneyness   0.968
+  delta_lag   0.016
+  T           0.015
+  iv_lag      0.000
+  spot_ret    0.000
+  r           0.000
+  q           0.000
+  atm_iv_lag  0.000
+  is_new      0.000
+
+  This suggests that the main reason that log_mF is so high, is because it contains information of the moneyness, and after it got removed, the forest started using the moneyness directly. Hence why it shot up in importance.
+
+  To check this I removed the moneyness too and go the following:
+
+  RMSE:                108.62
+
+Feature importance (higher = more useful):
+  iv_lag      0.746
+  T           0.184
+  delta_lag   0.061
+  atm_iv_lag  0.003
+  is_new      0.002
+  r           0.001
+  spot_ret    0.001
+  q           0.000
+
+  The root mean square blew up suggesting that the information of the moneyness of the option is key to pricing the option accuratly.
+
+  I added a hyperparameter optimiser:
+
+ ` search = RandomizedSearchCV(
+    RandomForestRegressor(random_state=0),
+    param_options,
+    n_iter=20,                               # try 20 random combinations
+    cv=TimeSeriesSplit(n_splits=3),
+    scoring="neg_root_mean_squared_error",
+    n_jobs=-1,
+    random_state=0,
+)`
+
+this reduced the RMSE to: 9.13
+

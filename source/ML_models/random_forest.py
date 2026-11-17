@@ -24,10 +24,18 @@ import matplotlib.pyplot as plt
 from scipy.spatial import cKDTree
 from scipy.stats import norm
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
 
 sys.path.append("source")
 from classical_models.black_scholes.bs_funcs import black_scholes_call
+
+# ---- What the forest predicts: every target set to True is run ----
+PREDICT = {
+    "price_over_S":    True,   # option price / S
+    "bs_correction":   True,   # (market price - Black-Scholes price with last week's IV) / S
+    "impl_volatility": True,   # today's implied vol, then priced with Black-Scholes
+}
 
 
 # =============================================================================
@@ -102,16 +110,39 @@ df["atm_iv_lag"] = df["prev_date"].map(atm.groupby("date")["impl_volatility"].me
 spot = df.groupby("date")["S"].first()
 df["spot_ret"] = np.log(df["S"] / df["prev_date"].map(spot))
 
-FEATURES = ["moneyness", "T", "r", "q",                                # old inputs
-            "log_mF", "iv_lag", "delta_lag", "atm_iv_lag", "spot_ret", "is_new"]
-TARGET = "price_over_S"
+FEATURES = ["moneyness", 
+            "T", 
+            "r", 
+            "q",
+            "log_mF", 
+            "iv_lag", 
+            "delta_lag", 
+            "atm_iv_lag", 
+            "spot_ret", 
+            "is_new"
+            ]
 
 # The first date has no previous week, so no lagged features
 df = df.dropna(subset=FEATURES)
 
+# Black-Scholes price with last week's implied vol, which bs_correction corrects
+df["bs_price"] = black_scholes_call(df["S"], df["strike"], df["iv_lag"], df["r"], df["T"], df["q"])
+df["bs_correction"] = (df["mid"] - df["bs_price"]) / df["S"]
+
+targets = [t for t, on in PREDICT.items() if on]
+
+
+def to_price(test, prediction, target):
+    """Turn the forest's prediction into a call price."""
+    if target == "bs_correction":
+        return test["bs_price"] + prediction * test["S"]
+    if target == "impl_volatility":
+        return black_scholes_call(test["S"], test["strike"], prediction, test["r"], test["T"], test["q"])
+    return prediction * test["S"]
+
 
 # =============================================================================
-# 4. Walk-forward test
+# 4. Walk-forward test (once for each target switched on)
 # =============================================================================
 # For each month from March, train on ALL earlier months, then predict that month.
 # This mimics real life (train on the past, predict the future) and gives one
@@ -120,68 +151,80 @@ df = df.dropna(subset=FEATURES)
 df["month"] = df["date"].dt.to_period("M")
 months = sorted(df["month"].unique())[2:]        # first two months are only used for training
 
-# Benchmark: Black-Scholes with last week's implied vol (no model at all)
-df["benchmark_price"] = black_scholes_call(df["S"], df["strike"], df["iv_lag"], df["r"], df["T"], df["q"])
+# Hyperparameters are tuned on the training-only months (Jan-Feb), so the
+# test months play no part in choosing them. TimeSeriesSplit validates on later dates.
+tune = df[df["month"] < months[0]].sort_values("date")
+param_options = {
+    "n_estimators": [50, 100, 200],
+    "min_samples_leaf": [1, 5, 20, 50, 200],
+    "max_features": [1.0, 0.5, "sqrt"],
+    "max_depth": [None, 10, 20],
+}
 
-df["predicted_price"] = np.nan
-results = []
-for month in months:
-    train = df[df["month"] < month]
-    test = df[df["month"] == month]
-
-    model = RandomForestRegressor(
-        n_estimators=100,      # number of trees in the forest
-        min_samples_leaf=5,    # each leaf must contain at least 5 options (stops overfitting)
-        n_jobs=-1,             # use all CPU cores
-        random_state=0,        # makes the results repeatable
+monthly_rmse = pd.DataFrame(index=[str(m) for m in months])
+importances = {}
+for target in targets:
+    print(f"\n---- Target: {target} ----")
+    search = RandomizedSearchCV(
+        RandomForestRegressor(random_state=0),
+        param_options,
+        n_iter=20,                               # try 20 random combinations
+        cv=TimeSeriesSplit(n_splits=3),
+        scoring="neg_root_mean_squared_error",
+        n_jobs=-1,
+        random_state=0,
     )
-    model.fit(train[FEATURES], train[TARGET])
+    search.fit(tune[FEATURES], tune[target])
+    print("Best hyperparameters:", search.best_params_)
 
-    # Predict price / S, then multiply by S to get back to a price in index points
-    df.loc[test.index, "predicted_price"] = model.predict(test[FEATURES]) * test["S"]
+    df[f"price_{target}"] = np.nan
+    for month in months:
+        train = df[df["month"] < month]
+        test = df[df["month"] == month]
 
-    results.append({
-        "month": str(month),
-        "train options": len(train),
-        "test options": len(test),
-        "RMSE forest": np.sqrt(mean_squared_error(test["mid"], df.loc[test.index, "predicted_price"])),
-        "RMSE benchmark": np.sqrt(mean_squared_error(test["mid"], test["benchmark_price"])),
-    })
-    print(f"{month} done")
+        model = RandomForestRegressor(**search.best_params_, n_jobs=-1, random_state=0)
+        model.fit(train[FEATURES], train[target])
+        df.loc[test.index, f"price_{target}"] = to_price(test, model.predict(test[FEATURES]), target)
+
+        monthly_rmse.loc[str(month), target] = np.sqrt(mean_squared_error(test["mid"], df.loc[test.index, f"price_{target}"]))
+        print(f"{month} done")
+
+    importances[target] = model.feature_importances_     # from the last forest (trained on Jan-Nov)
 
 
 # =============================================================================
 # 5. How good are the predictions?
 # =============================================================================
-print("\nRMSE (index points) for each test month:")
-print(pd.DataFrame(results).set_index("month").round(2).to_string())
-
-tested = df.dropna(subset=["predicted_price"])
+tested = df[df["month"].isin(months)]
 actual = tested["mid"]
-predicted = tested["predicted_price"]
+
+print("\nRMSE (index points) for each test month:")
+print(monthly_rmse.round(2).to_string())
 
 print("\nAll test months together (prices in index points):")
-print(f"  Mean absolute error: {mean_absolute_error(actual, predicted):.2f}")
-print(f"  RMSE:                {np.sqrt(mean_squared_error(actual, predicted)):.2f}")
-print(f"  R squared:           {r2_score(actual, predicted):.4f}")
-print(f"  Benchmark RMSE:      {np.sqrt(mean_squared_error(actual, tested['benchmark_price'])):.2f}")
+summary = pd.DataFrame({
+    target: {"RMSE": np.sqrt(mean_squared_error(actual, tested[f"price_{target}"])),
+             "R squared": r2_score(actual, tested[f"price_{target}"])}
+    for target in targets
+}).T
+print(summary.round(4).to_string())
 
-# Which features did the last forest (trained on Jan-Nov) find most useful?
 print("\nFeature importance (higher = more useful):")
-for name, importance in sorted(zip(FEATURES, model.feature_importances_), key=lambda x: -x[1]):
-    print(f"  {name:<11s} {importance:.3f}")
+print(pd.DataFrame(importances, index=FEATURES).round(3).to_string())
 
 
 # =============================================================================
 # 6. Plot predicted vs actual prices
 # =============================================================================
-plt.figure(figsize=(6, 6))
-plt.scatter(actual, predicted, s=2, alpha=0.3)
+fig, axes = plt.subplots(1, len(targets), figsize=(6 * len(targets), 6), squeeze=False)
 max_price = actual.max()
-plt.plot([0, max_price], [0, max_price], color="red", label="perfect prediction")
-plt.xlabel("Market price (mid)")
-plt.ylabel("Random forest price")
-plt.title("SPX calls: random forest vs market (Mar-Dec 2023)")
-plt.legend()
-plt.tight_layout()
+for ax, target in zip(axes[0], targets):
+    ax.scatter(actual, tested[f"price_{target}"], s=2, alpha=0.3)
+    ax.plot([0, max_price], [0, max_price], color="red", label="perfect prediction")
+    ax.set_xlabel("Market price (mid)")
+    ax.set_ylabel("Random forest price")
+    ax.set_title(f"Target: {target}")
+    ax.legend()
+fig.suptitle("SPX calls: random forest vs market (Mar-Dec 2023)")
+fig.tight_layout()
 plt.show()
