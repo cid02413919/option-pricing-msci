@@ -3,187 +3,167 @@
 ## 17/11/2026 – ML Phase 1: Random forest baseline
 
 **Aims:**
-- Turn the first random forest (RF) into a fair, comparison-ready model that plugs into `compare_funcs.py`.
-- Price calls and puts, add volatility-based features, test with walk-forward validation, save the trained model.
+- Improve the first random forest (RF) for SPX calls: add volatility-based inputs and test it properly over time.
 
 **Files changed:**
-- `source/ML_models/random_forest.py`: rewritten as functions (`add_features`, `train`, `predict_chain`, `walk_forward`, `save_model`, `load_model`) plus a test run on SPX 2023.
-- `source/classical_models/comparing_models/compare_funcs.py`: two new methods, `"rf"` and `"iv_lag"`.
-- `source/classical_models/comparing_models/error_overall.py`: switches for the two new methods.
-- `.gitignore`: ignores `source/ML_models/saved/` (models can be regenerated).
+- `source/ML_models/random_forest.py`: same structure, target (predict call price ÷ S) and calls-only data as before, with new inputs and walk-forward testing instead of one train/test split.
 
 ---
 
 ### 1. Key idea in plain words
 
-An option's price is fixed by a few contract terms (strike K, time to expiry T, today's price S, interest rate r, dividend yield q) plus one unknown: how much the market expects the price to move, the **volatility**. Black–Scholes (BS) turns a volatility into a price. The volatility that makes BS give exactly the market price is the **implied volatility (IV)**. Every pricing method in this project is really a way of guessing the IV (or, for Heston, the whole volatility process).
+An option's price is fixed by a few contract terms (strike K, time to expiry T, today's index level S, interest rate r, dividend yield q) plus one unknown: how much the market expects the index to move, the **volatility**. Black–Scholes (BS) turns a volatility into a price. The volatility that makes BS give exactly the market price is the **implied volatility (IV)**.
 
-The RF here learns to guess each option's IV from information available on the pricing day. BS then turns that IV into a price.
+The RF learns the price directly from examples. It gets the contract terms plus some information about recent volatility, and predicts price ÷ S.
 
 ### 2. Why start with a random forest
 
 A random forest is many decision trees. Each tree splits the data with yes/no questions ("is T < 0.1?", "is the option far out of the money?"). Each tree is trained on a random sample, and the forest averages all of them (Breiman, 2001).
 
-| Option | Why not first |
+| Alternative | Why not first |
 |---|---|
 | Linear regression | Option prices depend on the inputs in strongly curved, interacting ways; a straight-line model cannot capture this without hand-made features. |
-| Gradient boosting (LightGBM, XGBoost) | Usually more accurate than RF, but has more settings to tune and overfits more easily. A better *second* model, once a baseline exists (Phase 2). |
-| Neural network | Smooth and flexible, but needs feature scaling, careful tuning and much more data handling. Phase 3. |
+| Gradient boosting (LightGBM, XGBoost) | Usually more accurate than RF, but has more settings to tune and overfits more easily. A better *second* model (Phase 2). |
+| Neural network | Smooth and flexible, but needs feature scaling, careful tuning and much more data handling (Phase 3). |
 | Gaussian process | Training cost grows with n³; impossible for ~850k options. |
 
 The RF was chosen first because it:
 - has few settings and works well with defaults
 - needs no feature scaling and tolerates outliers
-- is fast to train (~5 s per fit here)
 - gives feature importances
 - is a standard benchmark in ML-in-finance work (e.g. Gu, Kelly & Xiu, 2020)
 
-It is the "first sensible ML model" that later models must beat.
+### 3. The most important rule: only use what is known at pricing time (data leakage)
 
-### 3. The most important design decision: what is known when (data leakage)
+**Leakage** means the model is given information it would not have in real use, which makes results look far better than they are.
 
-**Leakage** means the model is given information it would not have in real use, which makes results look far better than they really are.
+- **Today's IV and delta are leakage.** OptionMetrics computes `impl_volatility` and `delta` *from today's market price*. Giving them to the model gives it the answer: BS with today's IV reprices the options almost perfectly (RMSE $0.65 on calls and puts). So IV and delta are used in **lagged** form only, from the previous pricing date a week earlier.
+- **This matches the other methods.** Heston is calibrated on the previous trading day, and the historical, GARCH and VIX vols only use earlier data.
+- **Today's S is allowed.** It is known when pricing, and every other method uses it.
 
-- **Today's IV and delta are leakage.** OptionMetrics computes `impl_volatility` and `delta` *from today's market price*. Giving them to the model means giving it the answer: BS with today's IV reprices the option with RMSE $0.65, almost perfectly (see Results). The roadmap's suggestion of adding `impl_volatility` and `delta` was therefore implemented in **lagged** form only:
-  - `iv_lag` is the option's IV on the previous pricing date (one week earlier).
-  - `delta_lag` is the BS delta recomputed from `iv_lag`.
-- **This matches the other methods.** Heston is calibrated on the previous trading day, and the historical, GARCH and VIX vols only use earlier data. The RF is held to the same rule.
-- **Today's spot price S is allowed.** It is known at pricing time, and every other method uses it too.
+### 4. What the model predicts (the target): price ÷ S
 
-### 4. What the model predicts (the target)
+As in the original version, the RF predicts **option price ÷ S** and then multiplies by S. An option with strike 4000 when S = 4100 behaves like one with strike 3900 when S = 4000. Dividing by S makes them look the same to the model, so it learns one pattern instead of one per index level.
 
-Candidates, tested on SPX 2023 with the walk-forward set-up in section 6. The prototype was slightly simpler than the final code, so these numbers differ a little from the Results.
+Alternatives considered:
+- **Price in dollars.** It scales with the index level, and trees cannot predict outside the range seen in training.
+- **IV, then price with BS.** IV is on the same scale for every option (≈ 0.05–1.5).
+- **Change in IV since last week, then price with BS.** IV barely moves week to week, so only the small change needs predicting.
 
-| Target | Avg monthly RMSE ($) | Comment |
-|---|---:|---|
-| Price / S (the old approach) | 9.3, 8.9, **28.1** (Apr, May, Jun) | Fails when the market regime changes |
-| IV level, contract features only | 8.7, 9.3, **27.7** (Apr, May, Jun) | Same problem |
-| IV level, + lagged IV features | 8.93 (Apr–Dec) | Better, still poor |
-| **IV change since last week**, + lagged features | **6.53** (Apr–Dec) | Chosen |
-| No model: BS with last week's IV (`iv_lag`) | 5.02 (Apr–Dec) | Naive benchmark |
-
-Why IV rather than price:
-- **Price scale.** Prices run from $0.05 to $6,000+, so a price model spends its effort on the expensive options. IV sits in roughly 0.05–1.5 for every option.
-- **No drift.** IV does not rise with the index level, whereas prices do.
-- **BS does the conversion.** Mapping IV to a price is handled exactly by the BS formula, including the put–call relationship.
-- **Readable errors.** Errors can be read in "vol points".
-
-Why the *change* in IV rather than its level:
-- **IV persists.** Most of today's IV is explained by last week's IV, so predicting only the change is a much easier job.
-- **Trees cannot extrapolate.** A tree can only output values it saw in training. When market vol fell to new lows in June 2023, the level models were stuck at old levels (RMSE ≈ 28). The change model is not affected, because "last week's IV" carries the level.
+In an earlier test on calls and puts, predicting the change in IV scored a lower RMSE than price ÷ S ($7.76 vs $9.69 on the same options). This could be a future improvement.
 
 ### 5. Features (inputs)
 
 | Feature | Meaning | Why |
 |---|---|---|
-| `is_call` | 1 = call, 0 = put | Calls and puts are now both used (twice the data). Their IVs are nearly equal but not identical. |
-| `log_mF` | ln(K / F), F = S·e^((r−q)T) is the forward price | Moneyness measured against the forward; 0 = at the money. Better than K/S when r, q ≠ 0. |
-| `T` | Years to expiry | The vol smile and its changes depend strongly on maturity. |
-| `r`, `q` | Interest rate, dividend yield | Standard BS inputs (little importance in practice). |
-| `iv_lag` | This option's IV last week | The starting point the model corrects. |
-| `delta_lag` | BS delta using `iv_lag` | Combines moneyness, maturity and vol in one number (roadmap request, leak-free version). |
-| `atm_iv_lag` | Last week's median IV of ~1-month at-the-money options | Overall market fear level. |
-| `spot_ret` | ln(S today / S last week) | Vol tends to rise when the market falls (the "leverage effect"), so this explains part of the IV change. |
-| `is_new` | 1 if the contract was not quoted last week | Marks options whose `iv_lag` is borrowed from a neighbour (below). |
+| `moneyness` | K / S | Original input: how far in or out of the money |
+| `T` | Years to expiry | Original input |
+| `r`, `q` | Interest rate, dividend yield | Original inputs (standard BS inputs) |
+| `log_mF` | ln(K / F), F = S·e^((r−q)T) is the forward price | **New.** Moneyness measured against the forward; 0 = at the money. |
+| `iv_lag` | This option's IV last week | **New.** Recent volatility of this option. |
+| `delta_lag` | BS delta using today's S, K, T, r, q and last week's IV | **New.** Leak-free version of delta; combines moneyness, maturity and vol in one number. |
+| `atm_iv_lag` | Last week's median IV of ~1-month at-the-money options | **New.** Overall market fear level. |
+| `spot_ret` | ln(S today / S last week) | **New.** Vol tends to rise when the market falls (the "leverage effect"). |
+| `is_new` | 1 if the contract was not quoted last week | **New.** Marks options whose `iv_lag` is borrowed (below). |
 
 Notes:
-- **New contracts (12% of quotes).** New weekly expiries and strikes have no IV last week. They take the IV of last week's closest option, measured by moneyness and √T. Its median error is 1.4 vol points, against 0.8 for contracts with their own history. This is better than discarding them.
-- **No transformed copies.** `sqrt(T)` and `T·IV` were *not* added. A tree only cares about the order of a feature's values, and √T has the same order as T, so these add nothing for a tree. (They will matter for the neural network.)
-- **Features tried and dropped:** the change in each option's moneyness since last week made April much worse (RMSE 20.7), through overfitting.
+- **New contracts.** New weekly expiries and strikes have no IV last week. They take the IV of last week's closest call, measured by moneyness and √T. (On calls and puts, this was off by a median of 1.4 vol points, against 0.8 for contracts with their own history.) This is better than discarding them.
+- **Calls only.** Puts were tried and dropped to keep the study simple. With puts, the model also needs an `is_call` input, and much of `delta_lag`'s importance came just from telling calls and puts apart.
+- **The first date (4 Jan) is dropped**, because it has no previous week.
+- **No transformed copies.** `sqrt(T)` and `T·IV` were *not* added. A tree only cares about the order of a feature's values, and √T has the same order as T, so these add nothing for a tree. (They matter for neural networks.)
 
-### 6. Walk-forward validation
+### 6. Walk-forward testing
 
-The old code trained on Jan–Oct and tested once on Nov–Dec. One split gives one number, which may just be luck.
+The old code trained on Jan–Oct and tested once on Nov–Dec. One split gives one number, which may be luck.
 
-Walk-forward (expanding window): for each month from March to December, train on **all earlier months**, then price that month. This gives 10 out-of-sample test months, and every RF price in the comparison comes from a model that never saw that month.
+Walk-forward (expanding window): for each month from March to December, train a new forest on **all earlier months**, then price that month. This gives 10 out-of-sample test months, all priced by a model that never saw them. Jan–Feb are only used for training.
 
-Why not ordinary random K-fold cross-validation? Options on the same day are almost copies of each other, and future data would leak into training.
+Why not a random split? Options on the same day are almost copies of each other, and future data would leak into training.
 
-### 7. Model settings
+**Benchmark:** each month also reports BS priced with last week's IV (`iv_lag`), with no model at all. An ML model is only useful if it beats this.
+
+### 7. Model settings (unchanged from the original)
 
 | Setting | Value | Why |
 |---|---|---|
 | `n_estimators` | 100 | More trees beyond ~100 barely change results |
-| `min_samples_leaf` | 200 | Each prediction averages at least 200 options. This smooths out bid–ask noise; it beat 5 (average monthly RMSE 6.53 vs 6.72) |
-| `max_samples` | 100,000 | Each tree trains on a random 100k options: fast, and adds variety between trees |
+| `min_samples_leaf` | 5 | Each leaf holds at least 5 options, which limits overfitting |
 | `random_state` | 0 | Repeatable results |
 
-Also tried and not kept:
-- **Weighting training by vega** (price sensitivity to vol), so that the training loss matches the dollar RMSE: 6.63 → 6.57, a negligible gain.
-- **Shallower trees** (depth 6): 6.48, also negligible.
+The full run takes a couple of minutes (10 forests on up to 385k options each).
 
 ### 8. How the code works
 
-1. `add_features(df)` takes the weekly chains and adds the features above. For each date it looks up each option on the previous date by `optionid`, using a nearest-neighbour search (`cKDTree`) for new contracts.
-2. `train(df)` fits the forest with target = IV today − `iv_lag`.
-3. `predict_iv` computes `iv_lag` + predicted change, and `bs_price` turns it into a call or put price.
-4. `predict_chain(df, model)` returns a price for every row of `df`, aligned with `df`. This is the same interface as `heston_price_chain`. `df` must include the previous week, which supplies the lagged features.
-5. `walk_forward(df)` loops over the months as in section 6 and returns out-of-sample prices plus a per-month table.
-6. `save_model` / `load_model` store the model and its feature list with `joblib` in `source/ML_models/saved/rf_<secid>.joblib`. Loading checks that the features match.
-7. In `compare_funcs.load_weekly_prices`:
-   - `"iv_lag"` is just another BS vol column.
-   - `"rf"` runs `walk_forward` on the same options the other methods price, cached in `source/data/cache_rf_prices_*.pkl` (delete to retrain). Sector ETFs get their own forest trained on their own data.
+1. **Load** the cached weekly SPX 2023 chains (52 Wednesdays).
+2. **Clean:** keep calls only (430k quotes) with a bid, T > 0, and no missing values.
+3. **Features:**
+   - `moneyness`, `log_mF`, and the target `price_over_S`.
+   - For each date, look up each option on the previous date by `optionid` to get `iv_lag`. Missing options get the nearest neighbour (`cKDTree`).
+   - `delta_lag`, `atm_iv_lag` and `spot_ret` are then built from the lagged data.
+4. **Walk-forward:** for each test month, fit the forest on all earlier months, predict price ÷ S, multiply by S. Also price the benchmark.
+5. **Results:** RMSE per month for the forest and the benchmark; overall MAE, RMSE, R²; feature importance of the last forest.
+6. **Plot:** predicted vs market prices.
 
-**Note:** switching on `"rf"` removes Jan–Feb from *every* method's comparison, because the RF has no out-of-sample prices for its first two training months.
+### 9. Results (SPX calls, 2023, Wednesdays, Mar–Dec, 372,888 options, all out of sample)
 
-### 9. Results (SPX, 2023, Wednesdays, Mar–Dec, 732,904 options, all out of sample)
-
-| Method | RMSE ($) |
-|---|---:|
-| BS with today's implied vol (uses the answer, not a forecast) | 0.65 |
-| BS with last week's IV (`iv_lag`) | **6.31** |
-| Random forest | 7.76 |
-| Heston (calibrated on previous day) | 15.85 |
-
-RMSE ($) by days to expiry:
-
-| Days | `iv_lag` | RF | Heston |
-|---|---:|---:|---:|
-| 0–7 | 2.38 | 4.42 | 2.44 |
-| 7–30 | 4.10 | 4.75 | **3.38** |
-| 30–90 | 4.76 | 5.24 | **4.15** |
-| 90–365 | **5.97** | 7.46 | 7.99 |
-| 365+ | **16.01** | 20.13 | 57.24 |
-
-Walk-forward RMSE ($) per test month (from running `random_forest.py`):
+RMSE (index points ≈ $) per test month:
 
 | Month | Mar | Apr | May | Jun | Jul | Aug | Sep | Oct | Nov | Dec |
 |---|---|---|---|---|---|---|---|---|---|---|
-| RF | 12.55 | 7.59 | 5.98 | 7.27 | 6.18 | 11.46 | 5.51 | 5.25 | 5.48 | 4.93 |
-| `iv_lag` | 11.71 | 5.81 | 4.65 | 6.12 | 5.86 | 5.45 | 3.96 | 4.90 | 5.64 | 4.97 |
+| Random forest | 15.10 | 8.25 | 5.51 | **18.38** | 6.77 | 7.00 | 4.97 | 5.43 | 6.45 | 5.65 |
+| Benchmark (`iv_lag`) | 7.31 | 3.85 | 4.21 | 6.36 | 5.82 | 6.20 | 3.39 | 4.71 | 5.93 | 5.94 |
 
-Feature importance (final model): `delta_lag` 0.69, `log_mF` 0.17, `T` 0.10, the rest ≤ 0.02. Impurity importance splits credit between correlated features: `delta_lag` already contains moneyness and maturity, so these numbers show *where* the forest splits, not cause and effect.
+All test months together:
+
+| Method | RMSE ($) |
+|---|---:|
+| BS with last week's IV (benchmark) | **5.55** |
+| Random forest (MAE 5.28, R² 0.9998) | 9.24 |
+
+Feature importance (forest trained on Jan–Nov):
+
+| Feature | Importance |
+|---|---:|
+| `log_mF` | 0.97 |
+| `moneyness` | 0.02 |
+| `T` | 0.005 |
+| `delta_lag` | 0.003 |
+| All others | ≈ 0 |
 
 **Interpretation:**
-- **The RF beats Heston overall (7.8 vs 15.9), but not the naive benchmark (6.3).** "Use last week's IV" is very hard to beat because IV changes from week to week are mostly unpredictable market news. The RF adds noise when it tries to forecast them.
-- **The RF closes the gap with more training data.** It gets close to, or slightly beats, `iv_lag` in Nov–Dec, when it has ~700k training options. With only ~2 months of data (March) it is worst. So data quantity matters, which supports using more years.
-- **Heston is better than both for options under 90 days.** It only loses overall because of very large errors on options over 1 year, which dominate the dollar RMSE.
-- **A few options dominate RMSE.** The worst 1% of options cause ~45% of the squared error for both `iv_lag` and RF (long-dated, expensive options). Dollar RMSE mostly measures long-dated options; percentage errors would tell a different story.
+- **The RF does not beat the benchmark.** "Use last week's IV" is very hard to beat, because IV changes from week to week are mostly unpredictable market news. The RF only beats it in December (5.65 vs 5.94), with the most training data.
+- **June 2023 fails (18.4).** Market vol fell to levels not seen in training, and trees cannot predict outside the range they were trained on.
+- **The importances show the forest has learned the curve's *shape*.**
+  - **Moneyness dominates.** Most of the variation in call price ÷ S is intrinsic value: deep in the money ≈ 1 − K/S, far out of the money ≈ 0. That is set by moneyness, so `log_mF` takes almost all the credit.
+  - **`log_mF` crowds out its look-alikes.** `moneyness` is nearly the same feature, so it gets little extra credit. `delta_lag` mostly re-describes moneyness, so it also gets little.
+  - **The vol level is almost ignored.** `iv_lag` is ≈ 0, so the forest cannot follow shifts in the overall vol level (June).
+- **The importance scores measure training error, not prediction.** They show how much each feature reduced the training error and split credit between correlated features. Permutation importance on test months would show what actually helps prediction.
+- **R² of 0.9998 is misleading.** Prices range from cents to thousands of dollars, so any sensible model explains almost all of the variance. RMSE against a benchmark is the meaningful measure.
 
 ### 10. Traps and intricacies
 
-- **Leakage through IV and delta** (section 3). This is the most common mistake in the literature; see Ruf & Wang (2020) for a review.
+- **Leakage through IV and delta** (section 3). This is a common mistake in the literature; see Ruf & Wang (2020).
 - **Random train/test splits** leak same-day information. Use time-ordered splits.
-- **Trees cannot extrapolate.** Predict changes or ratios, not levels that can drift.
-- **Dollar RMSE vs training loss.** The model minimises error in IV, but is judged in dollars, where long-dated options carry most of the weight.
+- **Trees cannot extrapolate.** If the target can drift outside the training range (prices, vol levels), predictions fail when the market regime changes (June 2023).
+- **R² looks excellent for any option pricing model.** Compare RMSE against a benchmark instead.
 - **SPX has duplicate-looking quotes.** Monthly (AM-settled) and weekly (PM-settled) options can share a strike and expiry. They have different `optionid`s, so the lagged IV matches the right one.
-- **Some IVs are absurd.** OptionMetrics caps IV at 3.0, and ~10k quotes have IV > 1 (very short-dated, far out of the money). They are kept, because the other methods are tested on them too.
-- **The lag is a week, not a day.** Only weekly chains are stored, while Heston uses the previous trading day. This handicaps the RF and `iv_lag`.
+- **Some IVs are absurd.** OptionMetrics caps IV at 3.0, and ~10k quotes have IV > 1 (very short-dated, far out of the money).
+- **The lag is a week, not a day.** Only weekly chains are stored, while Heston uses the previous trading day.
 
 ### 11. Limitations
 
 - One year (2023), one underlying (SPX), weekly data. 2023 was a calm, falling-vol year.
-- The lag is one week (see above).
-- The RF price surface is piecewise flat. It is not smooth and does not guarantee no-arbitrage (e.g. prices that fall smoothly as the strike rises).
-- ETF options are American; pricing them with BS (here and in the other methods) is only exact for dividend-free calls.
-- The prototype tests in sections 4 and 7 used a simpler set-up (200k training sample, own-contract lags only), so their numbers are indicative.
+- The lag is one week.
+- The RF price surface is piecewise flat. It is not smooth and does not guarantee no-arbitrage.
+- The RF is not yet in `compare_funcs.py`, so it is not in the comparison plots with the other methods.
 
 ### 12. Next steps
 
-1. **Daily lag.** Store the previous trading day's chains (they are already downloaded for the Heston calibration) so `iv_lag` is one day old, like Heston's input.
-2. **More data.** Several years (e.g. 2019–2023, including the 2020 crash and the 2022 bear market), so the model sees different vol regimes.
-3. **Phase 2.** Gradient boosting (LightGBM / HistGradientBoosting) with the same target, features and walk-forward test, so it can be compared directly with this RF. Always report the `iv_lag` benchmark.
-4. **Percentage errors.** Report errors by moneyness and maturity buckets and in percentage terms, not just overall dollar RMSE.
+1. **Predict the IV change** instead of price ÷ S. It was tested: $7.76 vs $9.69, and no June failure.
+2. **Daily lag.** Store the previous trading day's chains (already downloaded for the Heston calibration), to match Heston's information.
+3. **More data:** several years (e.g. 2019–2023) so the model sees different vol regimes.
+4. **Phase 2:** gradient boosting (LightGBM / HistGradientBoosting) with the same inputs and walk-forward test, always reporting the benchmark.
+5. **Add the RF to `compare_funcs.py`**, so it appears in the maturity, moneyness and sector plots.
 
 **References:**
 - Breiman, L. (2001). Random forests. *Machine Learning* 45, 5–32.
