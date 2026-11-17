@@ -12,7 +12,7 @@ from classical_models.comparing_models.compare_funcs import LABELS, COLOURS, cho
 from data_importing.data_import import multi_option_single_day, multi_option_multi_day, single_option_multi_day, return_multi_day, get_vix
 
 # WRDS username, and the day the option is chosen on (it is followed from here to expiry)
-username = "kairogers"
+username = "AlexMatijasevic"
 start = "2025-06-23"
 
 # ---- Settings: switch these on/off ----
