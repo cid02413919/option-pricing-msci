@@ -256,13 +256,113 @@ The Heston model prediction vs the market prices for Microsoft stocks. I did plo
 
 ---
 
-**ML Models**
+## 17/11/2026 – Phase 1: Machine Learning Baseline with Random Forest
 
-Families: 
-- Neural networks
-- Tree ensembles (random forest, XGBoost, LightGBM, CatBoost)
-- Kernel methods (Gaussian process, SVR)
-- Linear models
+**Aims:**
+- Implement the first machine learning baseline for option pricing using a Random Forest.
+- Formulate a scale-invariant prediction target that remains valid as the underlying index moves to new price levels.
+- Build a non-leaking feature pipeline using today's observable market parameters alongside prior volatility expectations.
+- Establish an expanding-window walk-forward validation strategy to benchmark against Black-Scholes and Heston.
 
-They can be trained to predict the price or the Black–Scholes correction. The benifit of the latter is that the value being predicted is smaller, therefore the RMSE will be less.
-Loss penalties (networks, linear models) encourage the bounds but don't guarantee them. Boosters can enforce monotonicity in strike, not convexity. Clipping enforces $\max(S-Ke^{-r\tau},0) \le C \le S$.
+**Work:**
+
+### Why Start with Random Forest?
+Before testing complex architectures like neural networks or boosting, Random Forest serves as the standard, robust benchmark for non-linear regression on tabular financial data:
+1. **No feature scaling needed:** Unlike neural networks, decision trees are invariant to monotonic transformations and do not require normalization or standardization of inputs with different units (e.g. strike in dollars vs time in years).
+2. **Handles non-linear relationships:** The volatility surface exhibits pronounced smile/skew curvature that linear models cannot capture; tree splits naturally partition the moneyness-maturity space into localized regimes.
+3. **Robust against overfitting (Bagging):** By training 100+ trees on random bootstrap subsets of options and random feature subsets, individual tree errors cancel out when predictions are averaged.
+
+### Target Formulation: Normalized Price ($C / S$)
+If a model is trained directly on dollar option prices, it encounters a major breakdown:
+- In early 2023, the S&P 500 traded near 3,800; by late 2023, it traded above 4,750.
+- Decision trees are partition-based step functions and **cannot extrapolate** beyond the range of target values seen in training.
+- By dividing the option mid-price by today's spot price ($C / S$), an at-the-money call looks economically identical whether the index is at 3,800 or 4,800. Dollar prices are recovered at inference simply by multiplying by today's spot: $\widehat{\text{Price}} = \widehat{y} \times S$.
+
+### Feature Selection and Preventing Look-Ahead Leakage
+We use all contract specifications known **today**:
+- **Today's contract terms:** Today's strike $K$, today's spot price $S$, today's time to maturity $T$, today's risk-free rate $r$, and today's dividend yield $q$.
+- **Moneyness:** $K / S$ and forward moneyness $\ln(K / F)$, where $F = S e^{(r-q)T}$.
+- **The Look-Ahead Trap:** Quoted implied volatility (`impl_volatility`) in WRDS is calculated from today's closing option price. Giving today's IV to the model gives it the answer. Therefore, volatility information is strictly lagged by 1 week (`iv_lag`).
+- **Surface Imputation (k-d Tree):** When options with new strikes or expiries are listed mid-year, they have no quote from the prior week. We use a 2D spatial `cKDTree` on $(\ln(K/F), \sqrt{T})$ to find the nearest option quoted last week and use its IV as an anchor, setting `is_new = 1`.
+
+### Walk-Forward Cross-Validation
+A standard random 80/20 train/test split is invalid for options data because options quoted on the same day share the same macro environment, spot price, and interest rates. Randomly splitting options across the same day leaks contemporaneous cross-sectional information into the test set. Instead, we use an expanding-window walk-forward test: training strictly on past months to predict the next month.
+
+**Limitations of Random Forest:**
+While Random Forest establishes a reliable baseline, bagging trains trees independently. If trees systematically misprice deep out-of-the-money options, averaging them does not fix the bias. This motivates moving to Gradient Boosted Decision Trees in Phase 2.
+
+---
+
+## 17/11/2026 – Phase 2: Gradient Boosted Trees for Option Pricing (HistGradientBoosting / LightGBM)
+
+**Aims:**
+- Advance from independent-tree bagging (Random Forest) to sequential error-correcting **Gradient Boosted Decision Trees (GBDT)**.
+- Price **both calls and puts** simultaneously in a single model using contract indicators and signed delta.
+- Verify that today's contract parameters ($S, K, T, r, q$) are fully leveraged while strictly lagging volatility to prevent leakage.
+- Build a drop-in `predict_chain(df)` function matching `heston_price_chain` to compare directly against Heston and Black-Scholes in `comparing_models`.
+- Serialize the trained production model to disk (`.joblib`) for zero-overhead inference.
+
+**Work:**
+
+### Boosting vs. Bagging (Why Gradient Boosting Wins)
+- **Random Forest (Bagging):** Trees are built in parallel and vote independently. They do not communicate or learn from each other's mistakes.
+- **Gradient Boosted Trees (Boosting):** Trees are trained **sequentially** like a team of editors. Tree 1 makes a baseline prediction. Tree 2 is trained specifically to predict the *residual errors* (mistakes) of Tree 1. Tree 3 corrects Tree 2, and so on.
+- Each tree takes a small step (controlled by a learning rate $\eta = 0.08$) in the direction that minimizes squared dollar error. This systematically drives down residual pricing bias across tricky regions of the volatility smile.
+
+### Why `HistGradientBoosting`?
+Classic gradient boosting algorithms check every unique floating-point value for split points, which is prohibitively slow for datasets with hundreds of thousands of option quotes. `HistGradientBoostingRegressor` (scikit-learn's implementation of the LightGBM algorithm) discretizes continuous features into 256 integer bins (histograms). This speeds up tree construction by $10\times$ to $20\times$ while acting as a natural regularizer against market quote noise.
+
+### Feature Pipeline: Today's Contract State + Lagged Volatility
+To address any confusion regarding what data is used:
+1. **Observable TODAY (Used fully by the model):**
+   - $S$ (Today's spot price of the index).
+   - $K$ (Today's strike price).
+   - $T$ (Today's time to maturity in years).
+   - $r, q$ (Today's risk-free rate and dividend yield).
+   - `moneyness` ($K / S$) and `log_mF` ($\ln(K / F)$ where $F = S e^{(r-q)T}$).
+   - `is_call` (1 for Call, 0 for Put).
+   - `spot_ret` (1-week log return up to today: $\ln(S_t / S_{t-1})$).
+   - Final dollar conversion: $\widehat{\text{Price}} = \widehat{y} \times S_{\text{today}}$.
+2. **Lagged from Last Week (To prevent look-ahead leakage):**
+   - `iv_lag`: The option's implied volatility from the previous week (with contract-specific call/put k-d tree interpolation for newly listed options).
+   - `delta_lag`: Black-Scholes delta computed using **today's** $S, K, T, r, q$, evaluated with *last week's* IV. For calls, $\Delta \in [0, 1]$; for puts, $\Delta \in [-1, 0]$. This signed delta smoothly conveys both moneyness and option direction in a single continuous feature.
+   - `atm_iv_lag`: The median IV of ~1-month ATM options from last week (market fear gauge).
+
+### The Three Target Formulations & The Black-Scholes Benchmark
+
+Initial testing of the direct normalized price ($C/S, P/S$) across all 732,904 options (both calls and puts) yielded an informative result:
+- $R^2 = 0.9983$ (explains 99.8% of market variance)
+- Yet GBM RMSE was **$\$23.69$**, whereas the Lagged Black-Scholes Benchmark achieved **$\$6.71$**.
+- By contrast, `random_forest.py` had an RMSE of $\approx \$9$.
+
+**Why did this discrepancy occur?**
+1. **Calls-Only vs. Calls + Puts:** `random_forest.py` evaluated **calls only** (~350k quotes). For calls, price monotonically decreases with strike. Puts slope in the opposite direction and have massive intrinsic dollar values (\$1,000+) at high strikes. Combining both doubled the difficulty of the function to be learned.
+2. **Tree Capacity (Leaf Count):** `RandomForestRegressor` ran with `max_depth=None` and `min_samples_leaf=5`, allowing each tree to grow thousands of leaves (nearly 1,000,000 total split regions). In contrast, standard GBM initialized with only 31 leaves, which underfit a 730k-row combined call/put dataset.
+3. **The Step-Function Error on Deep In-The-Money Options:** In options, Black-Scholes guarantees exact linear intrinsic value ($S - Ke^{-rT}$). Deep ITM options have Vega $\approx 0$, so even with last week's IV, Black-Scholes prices them with almost $\$0.00$ error. A decision tree, however, outputs flat step-functions. An error of just 0.5% in normalized space on a \$1,000 option produces a **$\$22.50$ error on a single option**, heavily inflating RMSE.
+
+**The Solution: Three Supported Target Formulations in `gbm.py`:**
+To resolve this and provide a rigorous comparison, `gbm.py` was structured with a `METHOD` switch (`"price_over_S"`, `"residual"`, `"iv"`, or `"all"` to run all three):
+1. **Direct Normalized Price (`price_over_S`):** Fits $y = \text{mid} / S$; $\widehat{\text{Price}} = \widehat{y} \times S$. Learns everything from scratch.
+2. **Residual over Black-Scholes (`residual`):** Fits $y = \text{mid} - \text{benchmark\_price}$; $\widehat{\text{Price}} = \text{benchmark\_price} + \widehat{y}$. Black-Scholes handles intrinsic value and discounting analytically; the tree only learns the small $\$1–\$3$ smile/skew residual.
+3. **Implied Volatility (`iv`):** Fits $y = \sigma_{\text{implied}}$; $\widehat{\text{Price}} = \text{BlackScholes}(S, K, \widehat{\sigma}, r, T, q)$. By feeding the predicted volatility through the analytical Black-Scholes formula, put-call parity and intrinsic value bounds are 100% mathematically guaranteed by construction.
+
+### Key Observations & Conceptual Insights:
+
+1. **Why BS Benchmark Achieves $\$6.71$ Here vs. $\$26–\$34$ in `comparing_models`:**
+   - Both use the **identical** pricing functions (`black_scholes_call` and `black_scholes_put` from `bs_funcs.py`).
+   - In `comparing_models`, Black-Scholes used a **flat volatility** across all strikes (VIX $\approx 17\%$, or 60-day historical vol $\approx 15\%$). A flat volatility has zero smile or skew, leading to large errors on out-of-the-money and in-the-money options.
+   - In the ML benchmark, Black-Scholes is given **`iv_lag`** (each contract's own market implied volatility from 7 days ago). Because market implied volatility is highly persistent over short periods, last week's smile already captures ~95% of real market pricing, creating an exceptionally strong baseline.
+
+2. **Why Residual vs. IV Formulation Varies Across Models:**
+   - **Residual Method:** Directly optimizes squared dollar error ($(\text{Price} - \widehat{\text{Price}})^2$). Random Forest averages 100 unconstrained trees (nearly 1,000,000 total partitions), creating an inherently smooth blend that excels at direct dollar residual fitting on calls.
+   - **IV Method:** Minimizes error in volatility space ($(\sigma - \widehat{\sigma})^2$). When decoded through Black-Scholes, options with low sensitivity to volatility (deep ITM and OTM options with Vega $\approx 0$) naturally damp out the tree's step errors to $\$0.00$. Black-Scholes acts as a non-linear "shock absorber", which is especially advantageous for gradient boosted trees pricing both calls and puts.
+
+### Deliverables & Interface:
+- Standalone execution script: `source/ML_models/gbm.py` (with `METHOD` and `CP_FILTER` controls at the top).
+- Walk-forward test over March–December 2023 with monthly tracking of Call, Put, and Combined RMSE against the Black-Scholes benchmark.
+- Standardized `predict_chain(df, method="residual", model)` function matching `heston_price_chain(df, params_by_date)`.
+- Serialized production models saved to `source/ML_models/saved/gbm_{method}_model.joblib`.
+- Diagnostic scatter plots saved to `figures/gbm_{method}_vs_market.png`.
+
+**Limitations and Next Step (Phase 3):**
+Decision trees create piecewise-constant step functions, meaning the predicted pricing surface is composed of flat local tiles rather than an infinitely smooth surface. This causes jagged numerical derivatives (Greeks like Gamma). In Phase 3, we move to **Multi-Layer Perceptrons (MLPs)** and neural networks to produce continuous, differentiable surfaces, laying the groundwork for Physics-Informed Neural Networks (PINNs).
