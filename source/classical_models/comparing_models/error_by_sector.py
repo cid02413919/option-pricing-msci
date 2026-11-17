@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 
 sys.path.append("source")  # tells python to look in source (run from the repo root)
 
-from classical_models.comparing_models.compare_funcs import LABELS, COLOURS, chosen, load_weekly_prices, overall_errors
+from classical_models.comparing_models.compare_funcs import LABELS, COLOURS, chosen, exercise_style, load_weekly_prices, overall_errors
 
 # secid -> (ticker, name). The XL... are sector ETFs (American options), SPX is an index (European)
 SECURITIES = {
@@ -21,7 +21,7 @@ SECURITIES = {
     110015: ("XLU", "Utilities"),
     110008: ("XLV", "Health Care"),
     110010: ("XLY", "Consumer Discretionary"),
-    108105: ("SPX", "S&P 500 Index"),
+    #108105: ("SPX", "S&P 500 Index"),
 }
 
 # WRDS username and period (same as the other comparison scripts, so the saved data files are shared)
@@ -29,7 +29,7 @@ username = "kairogers"
 start, end = "2023-01-01", "2023-12-31"
 
 # ---- Settings: switch these on/off ----
-SHOW_ALL_ERRORS = True   # True also does median absolute error and MAPE (RMSE is always done)
+SHOW_ALL_ERRORS = False   # True also does median absolute error and MAPE (RMSE is always done)
 SAVE_FIG = False         # True saves the figure(s) to figures/
 
 # ---- Methods to compare: True = calculate and plot, False = skip ----
@@ -53,11 +53,16 @@ if SHOW_ALL_ERRORS:
 # ---- Errors for each security ----
 # Option chains on every Wednesday (Tuesday if Wednesday is a holiday), priced by each method.
 # Saved to source/data the first time; delete the files to redo.
+#
+# Dividends depend on the exercise style (from compare_funcs.SECURITIES):
+#   american (the ETFs) : q = 0, and only options with no ex-dividend date before expiry are used
+#   european (SPX)      : the dividend yield q is used, on every option
 results = {m: {} for m in metrics}    # metric -> ticker -> {method: value}
 for secid, (ticker, name) in SECURITIES.items():
-    print(f"\n==== {ticker} ({name}) ====")
+    exercise = exercise_style(secid)
+    print(f"\n==== {ticker} ({name}, {exercise}) ====")
     try:
-        df = load_weekly_prices(username, secid, start, end, methods)
+        df = load_weekly_prices(username, secid, start, end, methods, exercise=exercise)
     except Exception as e:
         print(f"Warning: {ticker}: no data ({e})")
         continue
@@ -84,7 +89,8 @@ for m, (ylabel, fname) in metrics.items():
     ax.set_xticklabels(table.index)
     ax.set_xlabel("Security")
     ax.set_ylabel(ylabel)
-    ax.set_title(f"Pricing error by sector ETF and S&P 500, {start} to {end} (weekly)",
+    ax.set_title(f"Pricing error by sector ETF and S&P 500, {start} to {end} "
+                 f"(weekly; American: options with no dividend before expiry, q = 0)",
                  loc="left", fontweight="bold")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

@@ -8,25 +8,29 @@ sys.path.append("source")  # tells python to look in source (run from the repo r
 
 from classical_models.black_scholes.bs_funcs import black_scholes_call, black_scholes_put, historical_volatility_series, garch_vol_series
 from classical_models.Heston.heston import calibrate_heston_by_date, heston_price_chain
-from classical_models.comparing_models.compare_funcs import LABELS, COLOURS, chosen
+from classical_models.comparing_models.compare_funcs import (
+    LABELS, COLOURS, SPX, chosen, ask_secid, exercise_style, ticker, load_ex_dividend_dates, drop_options_over_dividends)
 from data_importing.data_import import multi_option_single_day, multi_option_multi_day, single_option_multi_day, return_multi_day, get_vix
 
 # WRDS username, and the day the option is chosen on (it is followed from here to expiry)
-username = "AlexMatijasevic"
-start = "2025-06-23"
+username = "kairogers"
+start = "2024-06-21"
 
 # ---- Settings: switch these on/off ----
-USE_DIVIDENDS = False   # False sets the dividend yield q to 0 in every model's prices
-SAVE_FIG = False        # True saves the figure(s) to figures/
+SAVE_FIG = True        # True saves the figure(s) to figures/
+
+# Dividends depend on the exercise style of the chosen security (from compare_funcs.SECURITIES):
+#   american : q = 0, and only options with no ex-dividend date before expiry can be chosen
+#   european : the dividend yield q is used, and any option can be chosen
 
 # ---- Methods to plot: True = calculate and plot, False = skip ----
 # (switching off GARCH or Heston also skips their slow fitting / extra download)
 METHODS = {
     "implied":     True,   # Black–Scholes, the market's implied vol (same-day, so it sits on the mid)
-    "hist_vol_zm": True,   # Black–Scholes, zero-mean 60-day historical vol
-    "hist_vol_dm": True,   # Black–Scholes, demeaned 60-day historical vol
-    "garch_vol":   True,   # Black–Scholes, GJR-GARCH vol forecast over the option's remaining life
-    "vix_dec":     True,   # Black–Scholes, VIX (S&P 500 vol, only a rough guide for other securities)
+    "hist_vol_zm": False,   # Black–Scholes, zero-mean 60-day historical vol
+    "hist_vol_dm": False,   # Black–Scholes, demeaned 60-day historical vol
+    "garch_vol":   False,   # Black–Scholes, GJR-GARCH vol forecast over the option's remaining life
+    "vix_dec":     False,   # Black–Scholes, VIX (S&P 500 vol, only a rough guide for other securities)
     "heston":      True,   # Heston, calibrated to the previous trading day's option chain
 }
 methods = chosen(METHODS)
@@ -42,10 +46,19 @@ def pick(prompt, n):
 
 
 # ---- Choose the option ----
-secid = int(input("SECID (e.g. 108105 = SPX, 110007 = XLB, 110014 = XLK): "))
+secid = ask_secid()
+name = ticker(secid)
+exercise = exercise_style(secid)
+american = exercise == "american"
 chain = multi_option_single_day(username, start, secid=secid, save=False)
 S0 = chain["S"].iloc[0]
-print(f"\n{len(chain)} options quoted on {start}, spot = {S0:g}")
+print(f"\n{len(chain)} {exercise} options quoted on {start}, spot = {S0:g}")
+if american:
+    # only options with no dividend between start and expiry (so none on any later day either)
+    ex_dates = load_ex_dividend_dates(username, secid, start, start)
+    chain = drop_options_over_dividends(chain, ex_dates)
+    if chain.empty:
+        raise ValueError(f"Every option on {start} has an ex-dividend date before expiry; try another start")
 
 # step 1: expiry
 expiries = [pd.Timestamp(e) for e in sorted(chain["exdate"].unique())]
@@ -53,7 +66,7 @@ counts = chain["exdate"].value_counts()
 print("\n  #  expiry       options")
 for i, e in enumerate(expiries):
     print(f"{i:3d}  {e.date()}   {counts[e]}")
-exdate = expiries[pick("Choose an expiry #: ", len(expiries))]
+exdate = expiries[pick("Choose an expiry # (option data is cut off after 2025-08-29): ", len(expiries))]
 
 # step 2: strike and call/put (strikes within 20% of spot, unless there are none)
 options = chain[chain["exdate"] == exdate]
@@ -68,9 +81,9 @@ print(f"\nFollowing option {optionid} from {start} to expiry {end}")
 
 #%%
 # ---- Load ----
-opt = single_option_multi_day(username, optionid, start, end, secid=secid, save=False, calc_q=USE_DIVIDENDS)
+opt = single_option_multi_day(username, optionid, start, end, secid=secid, save=False, calc_q=not american)
 opt = opt[(opt["T"] > 0) & opt["impl_volatility"].notna()].sort_values("days", ascending=False).reset_index(drop=True)
-if not USE_DIVIDENDS:
+if american:
     opt["q"] = 0.0
 
 # returns indexed by date, with a year before start: GARCH's fitting window, and Heston's first previous day
@@ -99,9 +112,11 @@ for m in methods:
 if "heston" in methods:
     prev_day = dict(zip(rtn.index[1:], rtn.index[:-1]))          # trading day -> trading day before it
     chains = multi_option_multi_day(username, sorted({prev_day[d] for d in opt["date"]}), secid=secid,
-                                    save=False, calc_q=USE_DIVIDENDS)
-    if not USE_DIVIDENDS:
+                                    save=False, calc_q=not american)
+    if american:
+        # same rule as the option itself: q = 0, fitted only to options with no dividend before expiry
         chains["q"] = 0.0
+        chains = drop_options_over_dividends(chains, ex_dates)
     params = calibrate_heston_by_date(chains)
     opt["price_heston"] = heston_price_chain(opt, {d: params[prev_day[d]] for d in opt["date"] if prev_day[d] in params})
 
@@ -112,13 +127,15 @@ fig, ax = plt.subplots(figsize=(9, 5))
 ax.plot(opt["days"], opt["mid"], "o", ms=4, color="blue", alpha=0.8, label="Market mid")
 for m in methods:
     label = LABELS[m]
-    if m == "vix_dec" and secid != 108105:
+    if m == "vix_dec" and secid != SPX:
         label += " (S&P 500 vol, only a rough guide here)"
     ax.plot(opt["days"], opt[f"price_{m}"], "-", lw=2, color=COLOURS[m], label=label)
 ax.invert_xaxis()                                   # time runs left to right towards expiry
 ax.set_xlabel("Days to expiry")
 ax.set_ylabel("Option price ($)")
-ax.set_title(f"secid {secid} {'call' if cp == 'C' else 'put'}, K = {K:g}, expiry {end}", loc="left", fontweight="bold")
+div_note = " (no dividend before expiry, q = 0)" if american else ""
+ax.set_title(f"{name} {exercise} {'call' if cp == 'C' else 'put'}, K = {K:g}, expiry {end}{div_note}",
+             loc="left", fontweight="bold")
 
 for side in ("top", "right"):
     ax.spines[side].set_visible(False)
