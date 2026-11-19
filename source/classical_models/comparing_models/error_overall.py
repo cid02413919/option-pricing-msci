@@ -15,10 +15,11 @@ start, end = "2023-01-01", "2023-12-31"
 SHOW_ALL_ERRORS = False   # also show median absolute error and MAPE
 
 METHODS = {
-    "hist_vol_zm": True,
+    "hist_vol_zm": False,
     "hist_vol_dm": False,
-    "garch_vol":   True,
-    "vix_dec":     True,
+    "garch_vol":   False,
+    "vix_dec":     False,
+    "ad_hoc":      True,
     "heston":      True,
 }
 methods = chosen(METHODS)

@@ -30,15 +30,16 @@ start, end = "2023-01-01", "2023-12-31"
 
 # ---- Settings: switch these on/off ----
 SHOW_ALL_ERRORS = False   # True also does median absolute error and MAPE (RMSE is always done)
-SAVE_FIG = False         # True saves the figure(s) to figures/
+SAVE_FIG = True         # True saves the figure(s) to figures/
 
 # ---- Methods to compare: True = calculate and plot, False = skip ----
 # (switching off GARCH or Heston also skips their slow fitting)
 METHODS = {
-    "hist_vol_zm": True,   # Black–Scholes, zero-mean 60-day historical vol
+    "hist_vol_zm": False,   # Black–Scholes, zero-mean 60-day historical vol
     "hist_vol_dm": False,   # Black–Scholes, demeaned 60-day historical vol
-    "garch_vol":   True,   # Black–Scholes, GJR-GARCH vol forecast over the option's life
-    "vix_dec":     True,   # Black–Scholes, VIX (S&P 500 vol, so only a rough market-wide vol for the ETFs)
+    "garch_vol":   False,   # Black–Scholes, GJR-GARCH vol forecast over the option's life
+    "vix_dec":     False,   # Black–Scholes, VIX (S&P 500 vol, so only a rough market-wide vol for the ETFs)
+    "ad_hoc":      True,   # Black–Scholes, the same option's implied vol on the previous trading day
     "heston":      True,   # Heston, calibrated to the previous trading day's option chain
 }
 methods = chosen(METHODS)

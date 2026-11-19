@@ -316,8 +316,8 @@ def trailing_dividend_yield(username, secid, start, end, save=True):
               f"div_12m mixes share bases:\n{splits[['ex_date', 'adj_factor']]}")
 
     divs = dist[dist["distr_type"] == "1"]
-    ex = divs["ex_date"].values
-    cum = np.concatenate([[0.0], divs["amount"].cumsum().values])
+    ex = divs["ex_date"].values.astype("datetime64[ns]")
+    cum = np.concatenate([[0.0], divs["amount"].astype(float).cumsum().values])   # float, even with no dividends
 
     # Sum over ex-dates in (t - 365, t]: cumulative sum up to t minus up to t - 365
     t = spot.index.values

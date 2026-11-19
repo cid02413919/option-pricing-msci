@@ -31,6 +31,7 @@ METHODS = {
     "hist_vol_dm": False,   # Black–Scholes, demeaned 60-day historical vol
     "garch_vol":   False,   # Black–Scholes, GJR-GARCH vol forecast over the option's remaining life
     "vix_dec":     False,   # Black–Scholes, VIX (S&P 500 vol, only a rough guide for other securities)
+    "ad_hoc":      True,   # Black–Scholes, the same option's implied vol on the previous trading day
     "heston":      True,   # Heston, calibrated to the previous trading day's option chain
 }
 methods = chosen(METHODS)
@@ -81,8 +82,11 @@ print(f"\nFollowing option {optionid} from {start} to expiry {end}")
 
 #%%
 # ---- Load ----
-opt = single_option_multi_day(username, optionid, start, end, secid=secid, save=False, calc_q=not american)
-opt = opt[(opt["T"] > 0) & opt["impl_volatility"].notna()].sort_values("days", ascending=False).reset_index(drop=True)
+week_before = (pd.Timestamp(start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")   # so ad hoc has a previous day
+opt = single_option_multi_day(username, optionid, week_before, end, secid=secid, save=False, calc_q=not american)
+opt = opt[(opt["T"] > 0) & opt["impl_volatility"].notna()].sort_values("days", ascending=False)
+opt["ad_hoc"] = opt["impl_volatility"].shift(1)    # previous trading day's implied vol on this option
+opt = opt[opt["date"] >= start].reset_index(drop=True)
 if american:
     opt["q"] = 0.0
 
