@@ -262,7 +262,7 @@ Families:
 - Neural networks
 - Tree ensembles (random forest, XGBoost, LightGBM, CatBoost)
 - Kernel methods (Gaussian process, SVR)
-- Linear models
+- Linear models0
 
 They can be trained to predict the price or the Black–Scholes correction. The benifit of the latter is that the value being predicted is smaller, therefore the RMSE will be less.
 Loss penalties (networks, linear models) encourage the bounds but don't guarantee them. Boosters can enforce monotonicity in strike, not convexity. Clipping enforces $\max(S-Ke^{-r\tau},0) \le C \le S$.

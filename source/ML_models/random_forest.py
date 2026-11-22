@@ -7,7 +7,7 @@ The idea:
   - The forest's prediction is the average of all the trees' predictions.
 
 Steps in this script:
-  1. Load the SPX option data (already downloaded and cached in source/data)
+  1. Load the SPX option data (from source/data if saved, otherwise from WRDS)
   2. Keep only calls and clean the data
   3. Choose the features (inputs, X) and the target (what we predict, y)
   4. Split into training and test data
@@ -15,7 +15,9 @@ Steps in this script:
   6. Measure how good the predictions are on the test data
   7. Plot predicted vs actual prices
 """
+
 import os
+import sys
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -26,10 +28,28 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 # =============================================================================
 # 1. Load the data
 # =============================================================================
-# Weekly SPX option chains for 2023 (secid 108105 = SPX), saved by compare_funcs.py
+# Weekly SPX option chains (secid 108105 = SPX). If the data has already been
+# downloaded (by this script or compare_funcs.py) it is loaded from source/data,
+# otherwise it is downloaded from WRDS and saved there for next time.
+USERNAME = "kairogers"     # WRDS username (only needed if the data isn't saved yet)
+SECID = 108105
+START, END = "2023-01-01", "2023-12-31"
+
 DATA_FILE = os.path.join(os.path.dirname(__file__), "..", "data",
-                         "cache_weekly_chains_108105_2023-01-01_2023-12-31.pkl")
-df = pd.read_pickle(DATA_FILE)
+                         f"cache_weekly_chains_{SECID}_{START}_{END}.pkl")
+
+if os.path.exists(DATA_FILE):
+    print("Loading saved option data...")
+    df = pd.read_pickle(DATA_FILE)
+else:
+    print("No saved option data found, downloading from WRDS...")
+    sys.path.append(os.path.join(os.path.dirname(__file__), ".."))  # so python can find data_importing
+    from data_importing.data_import import multi_option_multi_day, return_multi_day, wednesdays
+
+    trading_days = return_multi_day(USERNAME, START, END, lookback=0, secid=SECID, save=False).index
+    dates = wednesdays(trading_days, START, END)
+    df = multi_option_multi_day(USERNAME, dates, secid=SECID, save=False, calc_q=True)
+    pd.to_pickle(df, DATA_FILE)
 
 
 # =============================================================================
