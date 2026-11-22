@@ -58,12 +58,13 @@ LABELS = {
     "hist_vol_dm": "Black–Scholes demeaned historical vol",
     "garch_vol":   "Black–Scholes GJR-GARCH vol",
     "vix_dec":     "Black–Scholes VIX",
+    "ad_hoc":      "Black–Scholes ad hoc (previous day's implied vol)",
     "heston":      "Heston (calibrated on previous day)",
 }
 COLOURS = {"implied": "pink", "hist_vol_zm": "orange", "hist_vol_dm": "red",
-           "garch_vol": "purple", "vix_dec": "green", "heston": "brown"}
+           "garch_vol": "purple", "vix_dec": "green", "ad_hoc": "teal", "heston": "brown"}
 
-BLACK_SCHOLES_METHODS = ["implied", "hist_vol_zm", "hist_vol_dm", "garch_vol", "vix_dec"]
+BLACK_SCHOLES_METHODS = ["implied", "hist_vol_zm", "hist_vol_dm", "garch_vol", "vix_dec", "ad_hoc"]
 
 
 # =============================================================================
@@ -120,6 +121,7 @@ def cached(cache_file, download):
 #   historical vols : rolling 60-day vol, shifted one day
 #   GARCH           : re-fit on the 252 returns before the day, forecast over the option's life
 #   VIX             : get_vix already gives the previous day's value
+#   ad hoc          : the same option's implied vol on the previous trading day
 #   Heston          : calibrated to the previous trading day's whole option chain
 #   implied         : the same day's implied vol (so it is not a forecast; it sits on the market price)
 
@@ -148,7 +150,7 @@ def load_weekly_prices(username, secid, start, end, methods, exercise="european"
         df = drop_options_over_dividends(df, ex_dates)
 
     # Step 3: each Black–Scholes method's vol, then its price
-    df = _add_black_scholes_vols(df, rtn, username, start, end, methods)
+    df = _add_black_scholes_vols(df, rtn, username, secid, start, end, methods)
     df = _add_black_scholes_prices(df, methods)
 
     # Step 4: Heston, calibrated to the previous trading day
@@ -209,7 +211,7 @@ def drop_options_over_dividends(df, ex_dates):
     return df[keep].copy()
 
 
-def _add_black_scholes_vols(df, rtn, username, start, end, methods):
+def _add_black_scholes_vols(df, rtn, username, secid, start, end, methods):
     """A volatility column for every Black–Scholes method in `methods`."""
     if "implied" in methods:
         df["implied"] = df["impl_volatility"]
@@ -220,7 +222,31 @@ def _add_black_scholes_vols(df, rtn, username, start, end, methods):
         df["vix_dec"] = df["date"].map(get_vix(username, start, end, save=False)["vix_dec"])
     if "garch_vol" in methods:
         df["garch_vol"] = garch_vol_series(df["date"], df["days"], rtn["log_return"])
+    if "ad_hoc" in methods:
+        df["ad_hoc"] = _previous_day_implied_vols(df, rtn, username, secid, start, end)
     return df
+
+
+def _previous_trading_day(rtn):
+    """trading day -> trading day before it"""
+    return dict(zip(rtn.index[1:], rtn.index[:-1]))
+
+
+def _load_previous_day_chains(df, rtn, username, secid, start, end):
+    """The whole option chain on the trading day before each pricing date in df (used by ad hoc and Heston)."""
+    prev_day = _previous_trading_day(rtn)
+    prev_dates = sorted({prev_day[d] for d in df["date"].unique()})
+    return cached(f"source/data/cache_prev_day_chains_{secid}_{start}_{end}.pkl",
+                  lambda: multi_option_multi_day(username, prev_dates, secid=secid, save=False, calc_q=True))
+
+
+def _previous_day_implied_vols(df, rtn, username, secid, start, end):
+    """Each option's implied vol on the previous trading day (NaN if it was not quoted then, e.g. just listed)."""
+    prev = _load_previous_day_chains(df, rtn, username, secid, start, end)
+    prev_vol = prev.set_index(["date", "optionid"])["impl_volatility"]
+    prev_day = _previous_trading_day(rtn)
+    wanted = pd.MultiIndex.from_arrays([df["date"].map(prev_day), df["optionid"]])
+    return prev_vol.reindex(wanted).to_numpy()
 
 
 def _add_black_scholes_prices(df, methods):
@@ -239,14 +265,13 @@ def _heston_prices(df, rtn, username, secid, start, end, ex_dates=None):
     day before each pricing date, then price that date's chain with those parameters.
     ex_dates None  -> European: calibrate with the dividend yield q on every option
     ex_dates given -> American: calibrate with q = 0 on the options with no dividend during their life"""
-    prev_day = dict(zip(rtn.index[1:], rtn.index[:-1]))       # trading day -> trading day before it
+    prev_day = _previous_trading_day(rtn)
     pricing_dates = df["date"].unique()
-    prev_dates = sorted({prev_day[d] for d in pricing_dates})
 
     def calibrate():
-        chains = multi_option_multi_day(username, prev_dates, secid=secid, save=False, calc_q=True)
+        chains = _load_previous_day_chains(df, rtn, username, secid, start, end)
         if ex_dates is not None:
-            chains["q"] = 0.0
+            chains = chains.assign(q=0.0)
             chains = drop_options_over_dividends(chains, ex_dates)
         return calibrate_heston_by_date(chains)
 
