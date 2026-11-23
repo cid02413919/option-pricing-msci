@@ -23,7 +23,7 @@ METHODS = {
     "hist_vol_dm": False,   # Black–Scholes, demeaned 60-day historical vol
     "garch_vol":   False,   # Black–Scholes, GJR-GARCH vol forecast over the option's life
     "vix_dec":     True,   # Black–Scholes, VIX (S&P 500 vol, only a rough guide for other securities)
-    "ad_hoc":      True,   # Black–Scholes, the same option's implied vol on the previous trading day
+    "lagged_iv":   True,   # Black–Scholes, the same option's implied vol on the previous trading day
     "heston":      True,   # Heston, calibrated to the previous trading day's option chain
 }
 methods = chosen(METHODS)

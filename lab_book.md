@@ -449,14 +449,14 @@ this reduced the RMSE to: 9.13
 
 ---
 
-## 19/11/2026 – Dividends and the Merton model
+## 19/11/2026 – lagged IV Black–Scholes model
 
 **Aims:**
-- Implement the ad hoc Black–Scholes model, and compare it to the other Black_Scholes models and the Heston model.
+- Implement the lagged IV Black–Scholes model, and compare it to the other Black_Scholes models and the Heston model.
 
 **Work:**
 
-Implement the ad oc Black_Scholes model: when past implied volatilities are used to predict todays volatility, which is then used in the Black-Schole model to predict a price.
+Implement the lagged IV Black_Scholes model: when past implied volatilities are used to predict todays volatility, which is then used in the Black-Schole model to predict a price.
 
 We will first implement the following:
 - Uses the same options, previous trading days implied volatility. If the previous day does not exist, then that option will not be used.
@@ -464,29 +464,29 @@ We will first implement the following:
 **Results:**
 
 <img src="figures/optionp_wrt_t_108105_169092814.png" width="1000">
-Followed option 169092814 from 2025-06-23 to expiry 2025-10-31. The ad hoc BS can be seen outperforming all other vol estimation methods for this option.
+Followed option 169092814 from 2025-06-23 to expiry 2025-10-31. The lagged IV BS can be seen outperforming all other vol estimation methods for this option.
 
-<img src="figures/ad_hoc_wrt_maturity.png" width="1000">
-Ad Hoc BS outperforms the Heston model for all maturities.
+<img src="figures/lagged_iv_wrt_maturity.png" width="1000">
+Lagged IV BS outperforms the Heston model for all maturities.
 
 <img src="figures/error_wrt_moneyness_108105_european.png" width="1000">
-Ad Hoc BS outperforms the Heston model for all moneyness.
+Lagged IV BS outperforms the Heston model for all moneyness.
 
 <img src="figures/error_wrt_optionp_108105_european.png" width="1000">
-Ad Hoc BS outperforms the Heston model for all option prices.
+Lagged IV BS outperforms the Heston model for all option prices.
 
 <img src="figures/rmse_by_sector.png" width="1000">
-For 2023 the Ad Hoc outperforms the Heston for all sectors except energy. the energy sector is known to be bery volatile, which makes me think that the Ad Hoc perhaps doesnt perform well for volatile (or perhaps high vol of vol) options.
+For 2023 the Lagged IV outperforms the Heston for all sectors except energy. the energy sector is known to be bery volatile, which makes me think that the Lagged IV perhaps doesnt perform well for volatile (or perhaps high vol of vol) options.
 
-To test this I did the Ad Hoc on volatile individual stock options.
+To test this I did the Lagged IV on volatile individual stock options.
 
 <img src="figures/option_price_wrt_t_213392_149566152.png" width="1000">
 Its not obvious which model does better. This was a stock that i read online is known to be volatile.
 
-However even on this stock, for 2023 overall the Ad Hoc method outperformed the Heston
+However even on this stock, for 2023 overall the Lagged IV method outperformed the Heston
 
 **MSE ($):**
 
-Black–Scholes ad hoc (previous day's implied vol): 1.764
+Black–Scholes lagged IV (previous day's implied vol): 1.764
 
 Heston (calibrated on previous day): 2.161

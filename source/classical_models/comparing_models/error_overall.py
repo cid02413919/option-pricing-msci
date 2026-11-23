@@ -10,7 +10,7 @@ from classical_models.comparing_models.compare_funcs import (
     LABELS, SPX, chosen, ask_secid, exercise_style, ticker, load_weekly_prices, overall_errors)
 
 username = "kairogers"
-start, end = "2023-01-01", "2023-12-31"
+start, end = "2020-01-01", "2020-12-31"
 
 SHOW_ALL_ERRORS = False   # also show median absolute error and MAPE
 
@@ -19,8 +19,8 @@ METHODS = {
     "hist_vol_dm": False,
     "garch_vol":   False,
     "vix_dec":     False,
-    "ad_hoc":      True,
-    "heston":      True,
+    "lagged_iv":   True,
+    "heston":      False,
 }
 methods = chosen(METHODS)
 

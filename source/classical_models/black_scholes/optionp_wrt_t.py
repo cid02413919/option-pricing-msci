@@ -19,7 +19,7 @@ SAVE_FIG = True       # True saves the figure(s) to figures/
 PLOT_HIST_VOL_ZERO_MEAN = True
 PLOT_HIST_VOL_DEMEANED = False
 PLOT_VIX = True
-PLOT_AD_HOC = True     # yesterday's implied vol on this option, so starts one day later
+PLOT_LAGGED_IV = True     # yesterday's implied vol on this option, so starts one day later
 
 
 def pick(prompt, n):
@@ -57,7 +57,7 @@ end = exdate.strftime("%Y-%m-%d")
 print(f"\nFollowing option {optionid} from {start} to expiry {end}")
 
 # ---- Load ----
-week_before = (pd.Timestamp(start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")   # so ad hoc has a previous day
+week_before = (pd.Timestamp(start) - pd.Timedelta(days=7)).strftime("%Y-%m-%d")   # so lagged IV has a previous day
 opt = single_option_multi_day(username, optionid, week_before, end, secid=secid, save=False, calc_q=USE_DIVIDENDS)
 rtn = return_multi_day(username, start, end, secid=secid, save=False).reset_index()   # date: index -> column
 
@@ -70,7 +70,7 @@ opt = opt.merge(vix[["date", "vix_dec"]], on="date", how="left")
 
 opt = opt[(opt["T"] > 0) & opt["impl_volatility"].notna()].sort_values("days", ascending=False)
 
-# ad hoc: yesterday's implied vol on the same option (rows run oldest -> newest)
+# lagged IV: yesterday's implied vol on the same option (rows run oldest -> newest)
 opt["prev_impl_vol"] = opt["impl_volatility"].shift(1)
 opt = opt[opt["date"] >= start]
 
@@ -87,7 +87,7 @@ vol_methods = [
     (PLOT_HIST_VOL_ZERO_MEAN, "zero-meaned historical vol",       "hist_vol_zm",     "orange"),
     (PLOT_HIST_VOL_DEMEANED,  "demeaned historical vol",          "hist_vol_dm",     "red"),
     (PLOT_VIX,                vix_label,                          "vix_dec",         "green"),
-    (PLOT_AD_HOC,             "ad hoc (yesterday's implied vol)", "prev_impl_vol",   "purple"),
+    (PLOT_LAGGED_IV,             "lagged IV (yesterday's implied vol)", "prev_impl_vol",   "purple"),
 ]
 
 # ---- Plot ----
