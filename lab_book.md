@@ -256,7 +256,7 @@ The Heston model prediction vs the market prices for Microsoft stocks. I did plo
 
 ---
 
-## 17/11/2026 – Phase 1: Machine Learning Baseline with Random Forest
+## 17/11/2026 – Phase 1: Machine Learning Baseline with Random Forest (ai written)
 
 **Aims:**
 - Implement the first machine learning baseline for option pricing using a Random Forest.
@@ -293,7 +293,7 @@ While Random Forest establishes a reliable baseline, bagging trains trees indepe
 
 ---
 
-## 17/11/2026 – Phase 2: Gradient Boosted Trees for Option Pricing (HistGradientBoosting / LightGBM)
+## 17/11/2026 – Phase 2: Gradient Boosted Trees for Option Pricing (HistGradientBoosting / LightGBM) (ai written)
 
 **Aims:**
 - Advance from independent-tree bagging (Random Forest) to sequential error-correcting **Gradient Boosted Decision Trees (GBDT)**.
@@ -456,7 +456,7 @@ this reduced the RMSE to: 9.13
 
 **Work:**
 
-Implement the lagged IV Black_Scholes model: when past implied volatilities are used to predict todays volatility, which is then used in the Black-Schole model to predict a price.
+Implement the ad oc Black_Scholes model: when past implied volatilities are used to predict todays volatility, which is then used in the Black-Schole model to predict a price.
 
 We will first implement the following:
 - Uses the same options, previous trading days implied volatility. If the previous day does not exist, then that option will not be used.
@@ -464,29 +464,87 @@ We will first implement the following:
 **Results:**
 
 <img src="figures/optionp_wrt_t_108105_169092814.png" width="1000">
-Followed option 169092814 from 2025-06-23 to expiry 2025-10-31. The lagged IV BS can be seen outperforming all other vol estimation methods for this option.
+Followed option 169092814 from 2025-06-23 to expiry 2025-10-31. The ad hoc BS can be seen outperforming all other vol estimation methods for this option.
 
-<img src="figures/lagged_iv_wrt_maturity.png" width="1000">
-Lagged IV BS outperforms the Heston model for all maturities.
+<img src="figures/ad_hoc_wrt_maturity.png" width="1000">
+Ad Hoc BS outperforms the Heston model for all maturities.
 
 <img src="figures/error_wrt_moneyness_108105_european.png" width="1000">
-Lagged IV BS outperforms the Heston model for all moneyness.
+Ad Hoc BS outperforms the Heston model for all moneyness.
 
 <img src="figures/error_wrt_optionp_108105_european.png" width="1000">
-Lagged IV BS outperforms the Heston model for all option prices.
+Ad Hoc BS outperforms the Heston model for all option prices.
 
 <img src="figures/rmse_by_sector.png" width="1000">
-For 2023 the Lagged IV outperforms the Heston for all sectors except energy. the energy sector is known to be bery volatile, which makes me think that the Lagged IV perhaps doesnt perform well for volatile (or perhaps high vol of vol) options.
+For 2023 the Ad Hoc outperforms the Heston for all sectors except energy. the energy sector is known to be bery volatile, which makes me think that the Ad Hoc perhaps doesnt perform well for volatile (or perhaps high vol of vol) options.
 
-To test this I did the Lagged IV on volatile individual stock options.
+To test this I did the Ad Hoc on volatile individual stock options.
 
 <img src="figures/option_price_wrt_t_213392_149566152.png" width="1000">
 Its not obvious which model does better. This was a stock that i read online is known to be volatile.
 
-However even on this stock, for 2023 overall the Lagged IV method outperformed the Heston
+However even on this stock, for 2023 overall the Ad Hoc method outperformed the Heston
 
 **MSE ($):**
 
-Black–Scholes lagged IV (previous day's implied vol): 1.764
+Black–Scholes  (previous day's implied vol): 1.764
 
 Heston (calibrated on previous day): 2.161
+
+
+The lagged IV Black-Scholes model was an interesting result. However we are looking into option pricing models with the purpose of pricing illiquid options. The lagged IV Black-Scholes model uses past market prices to estimate todays IV, however for illiquid options, the past market prices are unreliable. Therefore even if the lagged IV Black-Scholes model performs well for liquid options, it is not fit for our project.
+
+
+---
+
+## 23/11/2026 – Understanding the Heston code
+
+**Aims:**
+- To understand how the Heston code we implemented works
+
+**Work:**
+
+The 5 parameters:
+
+v0	How volatile the market is right now
+theta	The "normal" long-run volatility level it drifts back to
+kappa	How fast it drifts back to normal (big means fast)
+sigma_v	How jumpy the volatility itself is ("vol of vol")
+rho	How the price and volatility move together. It is usually negative: when the market falls, volatility shoots up. This is what creates the volatility smile/skew.
+
+The calibration process finds the best parameters.
+
+What the code does:
+
+Step 1: Get yesterday's options (_load_previous_day_chains)
+
+Step 2: Clean the data (prepare_wrds_chain, calibrate_heston_day)
+
+It throws away the following options because it would "confuse the fit" apparently:
+
+options nobody has traded or held,
+options with a zero bid, or a bid above the ask,
+options with fewer than 7 days left,
+options with a strike outside 80%–120% of the stock price, or more than 1 year to expiry.
+
+Step 3: Make a sensible first guess (init_guess_from_market)
+The code makes an initial guess for the parameters based on the data:
+
+v0 ≈ implied vol of the shortest at-the-money option (the market's view of "now")
+theta ≈ implied vol of the longest at-the-money option (the market's view of "normal")
+kappa comes from how quickly vol changes between short and long expiries
+rho comes from the skew: if out-of-the-money puts have higher IV than calls, rho is more negative
+sigma_v just starts at 0.5
+
+Step 4: Calibrate (calibrate_heston)
+
+
+This is a loop that the optimiser (scipy least_squares) runs for you:
+
+Take the current 5 parameters.
+Use Heston to price every option in yesterday's chain.
+Compare each model price with the market mid price. (whenever the feller condition is violated, how much its violated by * 5 is added to the list of residuals fed into scipy least_squares)
+Adjust the parameters to make the errors smaller.
+Repeat until it can't do any better.
+
+Step 5: Price today's options (heston_price_chain)
