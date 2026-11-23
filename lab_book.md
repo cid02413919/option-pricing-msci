@@ -463,24 +463,24 @@ We will first implement the following:
 
 **Results:**
 
-<img src="figures/optionp_wrt_t_108105_169092814.png" width="1000">
+<img src="figures/lagged_iv_optionp_wrt_t_108105_169092814.png" width="1000">
 Followed option 169092814 from 2025-06-23 to expiry 2025-10-31. The ad hoc BS can be seen outperforming all other vol estimation methods for this option.
 
-<img src="figures/ad_hoc_wrt_maturity.png" width="1000">
+<img src="figures/lagged_iv_wrt_maturity.png" width="1000">
 Ad Hoc BS outperforms the Heston model for all maturities.
 
-<img src="figures/error_wrt_moneyness_108105_european.png" width="1000">
+<img src="figures/lagged_iv_wrt_moneyness.png" width="1000">
 Ad Hoc BS outperforms the Heston model for all moneyness.
 
-<img src="figures/error_wrt_optionp_108105_european.png" width="1000">
+<img src="figures/lagged_iv_wrt_optionp.png" width="1000">
 Ad Hoc BS outperforms the Heston model for all option prices.
 
-<img src="figures/rmse_by_sector.png" width="1000">
+<img src="figures/lagged_iv_rmse_by_sector.png" width="1000">
 For 2023 the Ad Hoc outperforms the Heston for all sectors except energy. the energy sector is known to be bery volatile, which makes me think that the Ad Hoc perhaps doesnt perform well for volatile (or perhaps high vol of vol) options.
 
 To test this I did the Ad Hoc on volatile individual stock options.
 
-<img src="figures/option_price_wrt_t_213392_149566152.png" width="1000">
+<img src="figures/lagged_iv_optionp_wrt_t_213392_149566152.png" width="1000">
 Its not obvious which model does better. This was a stock that i read online is known to be volatile.
 
 However even on this stock, for 2023 overall the Ad Hoc method outperformed the Heston
