@@ -507,10 +507,15 @@ The lagged IV Black-Scholes model was an interesting result. However we are look
 The 5 parameters:
 
 v0	How volatile the market is right now
+
 theta	The "normal" long-run volatility level it drifts back to
+
 kappa	How fast it drifts back to normal (big means fast)
+
 sigma_v	How jumpy the volatility itself is ("vol of vol")
-rho	How the price and volatility move together. It is usually negative: when the market falls, volatility shoots up. This is what creates the volatility smile/skew.
+
+rho	How the price and volatility move together. It is usually negative: when the 
+market falls, volatility shoots up. This is what creates the volatility smile/skew.
 
 The calibration process finds the best parameters.
 
@@ -548,3 +553,9 @@ Adjust the parameters to make the errors smaller.
 Repeat until it can't do any better.
 
 Step 5: Price today's options (heston_price_chain)
+
+
+---
+
+## 24/11/2026 – Implementing ML models
+
