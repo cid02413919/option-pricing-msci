@@ -171,6 +171,10 @@ This is mainly due to the SPX being a lot more expensive than the ETFs. Which is
 
 <img src="figures/mpe_wrt_sector.png" width="1000">
 
+
+THIS GRAPH IS WRONG AS IT TREATS AMERICAN OPTIONS WITH DIVIDENT PAYMENTS BEFORE EXPIRY AS EUROPEAN OPTIONS.
+
+
 The errors can be seen to be a lot closer, however the SPX error is still greater, suggesting that the SPX being more expensive doesn't fully account for the difference in error.
 
 ### Dividends, q, for American options
@@ -548,3 +552,15 @@ Adjust the parameters to make the errors smaller.
 Repeat until it can't do any better.
 
 Step 5: Price today's options (heston_price_chain)
+
+
+---
+
+### Why Heston over SABR
+
+Both **Heston** and **SABR** are standard stochastic volatility models, but Heston is the better choice for this project:
+
+- **Whole-surface vs. per-expiry calibration:** Heston models mean-reverting variance globally with **5 parameters per day** ($\kappa, \theta, \sigma_v, \rho, v_0$) across all strikes and maturities simultaneously. SABR has no mean reversion and is calibrated **separately to each expiry slice** (3–4 parameters per expiry), which would require dozens of parameters per day plus ad-hoc maturity interpolation when pricing next-day options out-of-sample.
+- **Exact across long maturities and deep wings:** Heston's characteristic function and Carr–Madan FFT are exact for its SDE across our full evaluation range (7–730 days, moneyness $0.5$–$1.5$). Hagan's SABR formula is an asymptotic approximation that degrades for long maturities ($T > 1$ year) and deep OTM strikes, where it can produce negative implied probability densities (butterfly arbitrage).
+- **Equity-index dynamics:** SPX and equity ETFs exhibit strong volatility mean-reversion and clustering—features built directly into Heston ($\kappa(\theta - v_t)$), whereas SABR was designed primarily for interest rates and FX.
+- **Fairer benchmark & direct thesis extensions:** Comparing a 5-parameter global Heston model against Black–Scholes and ML models gives a clean complexity hierarchy. It also connects directly to our planned extensions: **Rough Heston** (`rough_heston.py`, which fixes Heston's flat short-dated skew) and a **Heston-informed PINN** (using the global Heston PDE).
